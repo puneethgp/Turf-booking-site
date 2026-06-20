@@ -1183,3 +1183,200 @@ input:checked + .toggle-slider:before {
   color: var(--accent-football);
 }
 
+@keyframes pulse {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(0, 255, 115, 0.7);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 8px rgba(0, 255, 115, 0);
+  }
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(0, 255, 115, 0);
+  }
+}
+
+/* ============================================================
+   RESPONSIVE STRUCTURAL LAYOUTS & MOBILE VIEWPORT FIXES
+   ============================================================ */
+.quick-login-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.player-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+.owner-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.admin-stats-grid {
+  display: flex;
+  gap: 12px;
+}
+.match-lineups-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.roster-select-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+.roster-select-right {
+  border-left: 1px solid var(--border-glow);
+  padding-left: 24px;
+}
+.active-players-setup-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.innings-dashboard-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 20px;
+}
+.active-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.create-group-form {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 10px;
+}
+.owner-add-player-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 10px;
+}
+.admin-create-profile-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto auto;
+  gap: 10px;
+  align-items: end;
+}
+.admin-table-container {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Floating Active Match Alert Popup Styles */
+.active-match-popup {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: rgba(11, 13, 20, 0.95);
+  border: 2px solid var(--accent-football);
+  border-radius: 16px;
+  padding: 20px;
+  z-index: 1500;
+  width: 380px;
+  max-width: calc(100vw - 48px);
+  box-shadow: 0 10px 30px rgba(0, 255, 115, 0.25);
+  backdrop-filter: blur(20px);
+  animation: slide-up 0.3s ease-out;
+}
+
+/* Mobile Media Queries (< 768px) */
+@media (max-width: 768px) {
+  .roster-select-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+  .roster-select-right {
+    border-left: none;
+    padding-left: 0;
+    border-top: 1px solid var(--border-glow);
+    padding-top: 16px;
+  }
+  .admin-create-profile-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Mobile Media Queries (< 768px) */
+@media (max-width: 768px) {
+  .quick-login-grid {
+    grid-template-columns: 1fr;
+  }
+  .player-stats-grid {
+    grid-template-columns: 1fr;
+  }
+  .owner-stats-grid {
+    grid-template-columns: 1fr;
+  }
+  .admin-stats-grid {
+    flex-direction: column;
+  }
+  .match-lineups-grid {
+    grid-template-columns: 1fr;
+  }
+  .active-players-setup-grid {
+    grid-template-columns: 1fr;
+  }
+  .innings-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+  .active-stats-grid {
+    grid-template-columns: 1fr;
+  }
+  .create-group-form {
+    grid-template-columns: 1fr;
+  }
+  .owner-add-player-form {
+    grid-template-columns: 1fr;
+  }
+  
+  .login-card {
+    padding: 24px 16px;
+  }
+  .scorecard-modal-card {
+    padding: 16px;
+  }
+  
+  /* Hide DB connection text label on phone view to prevent nav overflow */
+  .db-status-badge .status-text {
+    display: none;
+  }
+  .db-status-badge {
+    padding: 3px 6px !important;
+  }
+  
+  /* Stacking Cart on mobile bottom bar */
+  .cart-sticky-bottom {
+    flex-direction: column;
+    gap: 12px;
+    align-items: stretch;
+    padding: 12px 16px;
+  }
+  .cart-left {
+    align-items: center;
+    text-align: center;
+  }
+  .btn-cart-book {
+    width: 100%;
+    text-align: center;
+    border-radius: var(--radius-md);
+  }
+  
+  /* Active match alert bounds */
+  .active-match-popup {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    width: auto;
+    max-width: calc(100vw - 32px);
+  }
+}
+
+
