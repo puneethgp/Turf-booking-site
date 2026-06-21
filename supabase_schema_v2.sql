@@ -163,10 +163,20 @@ BEGIN
         new.id,
         COALESCE(new.raw_user_meta_data->>'full_name', split_part(new.email, '@', 1)),
         new.email,
-        COALESCE((new.raw_user_meta_data->>'role')::user_role, 'player'::user_role)
+        -- Safe enum cast: only cast if the value is a known valid role, otherwise default to 'player'
+        CASE
+            WHEN new.raw_user_meta_data->>'role' IN ('player', 'owner', 'admin')
+            THEN (new.raw_user_meta_data->>'role')::user_role
+            ELSE 'player'::user_role
+        END
     )
     ON CONFLICT (id) DO NOTHING;
     RETURN NEW;
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Log the error but never block the signup
+        RAISE WARNING 'handle_new_user trigger failed for user %: %', new.id, SQLERRM;
+        RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 

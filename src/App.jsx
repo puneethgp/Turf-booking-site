@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { 
   Wifi, 
   Flame, 
@@ -419,7 +419,7 @@ function App() {
   // Live Scorecard Editor states
   const [activeScorecardBookingId, setActiveScorecardBookingId] = useState(null)
   const [scorecardStep, setScorecardStep] = useState('splitter') // 'splitter', 'toss', 'setup', 'scoring'
-  const [tossCoinState, setTossCoinState] = useState({ spinning: false, winner: null, choice: null })
+  const [tossCoinState, setTossCoinState] = useState({ spinning: false, winner: null, choice: null, showModal: false })
   const [tossWinnerOverride, setTossWinnerOverride] = useState(1)
   const [tossChoiceOverride, setTossChoiceOverride] = useState('Batting')
   const [matchOversInput, setMatchOversInput] = useState(6)
@@ -436,6 +436,69 @@ function App() {
 
   // Dashboard tab state for Admin
   const [adminDashTab, setAdminDashTab] = useState('profiles') // 'profiles' | 'bookings' | 'owners'
+
+  // ── Toast notification system ──
+  const [toasts, setToasts] = useState([])
+  const showToast = useCallback((message, type = 'success', duration = 3500) => {
+    const id = Date.now() + Math.random()
+    setToasts(prev => [...prev, { id, message, type }])
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration)
+  }, [])
+
+  // ── Custom modal dialog system (replaces browser alert/confirm/prompt) ──
+  const [customModal, setCustomModal] = useState(null) // { type: 'alert'|'confirm'|'prompt', title, message, defaultValue, placeholder, resolve }
+  const [modalInputValue, setModalInputValue] = useState('')
+
+  const showAlert = useCallback((message, title = 'Notification') => {
+    return new Promise(resolve => {
+      setCustomModal({ type: 'alert', title, message, resolve })
+    })
+  }, [])
+
+  const showConfirm = useCallback((message, title = 'Are you sure?') => {
+    return new Promise(resolve => {
+      setCustomModal({ type: 'confirm', title, message, resolve })
+    })
+  }, [])
+
+  const showPrompt = useCallback((message, defaultValue = '', placeholder = '', title = 'Input Required') => {
+    setModalInputValue(defaultValue)
+    return new Promise(resolve => {
+      setCustomModal({ type: 'prompt', title, message, defaultValue, placeholder, resolve })
+    })
+  }, [])
+
+  const showSelectPrompt = useCallback((message, options, defaultValue = '', title = 'Selection Required') => {
+    setModalInputValue(defaultValue || options[0])
+    return new Promise(resolve => {
+      setCustomModal({ type: 'select', title, message, options, defaultValue, resolve })
+    })
+  }, [])
+
+  const handleModalSubmit = (e) => {
+    if (e) e.preventDefault()
+    if (customModal) {
+      if (customModal.type === 'prompt' || customModal.type === 'select') {
+        customModal.resolve(modalInputValue)
+      } else {
+        customModal.resolve(true)
+      }
+      setCustomModal(null)
+    }
+  }
+
+  const handleModalCancel = () => {
+    if (customModal) {
+      if (customModal.type === 'confirm') {
+        customModal.resolve(false)
+      } else if (customModal.type === 'prompt' || customModal.type === 'select') {
+        customModal.resolve(null)
+      } else {
+        customModal.resolve(true)
+      }
+      setCustomModal(null)
+    }
+  }
 
   // Fetch initial data from Supabase if configured
   useEffect(() => {
@@ -626,6 +689,24 @@ function App() {
     return booked
   }, [bookings, selectedTurf, selectedDateIndex, slotsData])
 
+  // Get count of available slots for a specific turf for the selected day
+  const getAvailableSlotsCount = useCallback((turfId) => {
+    const booked = new Set()
+    bookings.forEach(b => {
+      if (b.turfId === turfId && b.dateIndex === selectedDateIndex) {
+        if (b.status !== 'rejected' && b.status !== 'cancelled') {
+          const startSlot = slotsData.find(s => s.time === b.time)
+          if (startSlot) {
+            for (let i = 0; i < b.duration; i++) {
+              booked.add(startSlot.hourValue + i)
+            }
+          }
+        }
+      }
+    })
+    return slotsData.length - booked.size
+  }, [bookings, selectedDateIndex, slotsData])
+
   // Direct slot toggle handler enforcing consecutive hours
   const handleSlotClick = (slot) => {
     if (currentBookedHours.has(slot.hourValue)) {
@@ -641,13 +722,22 @@ function App() {
         return false
       })
 
-      if (bookedBooking && bookedBooking.openToJoin) {
-        setSelectedBookedSlotId(bookedBooking.id)
-        setSelectedHours([]) // Clear other hours selection
-        return
+      if (bookedBooking) {
+        const isMyBooking = isLoggedIn && currentUser &&
+          (bookedBooking.captainName === currentUser.name ||
+           bookedBooking.booker_id === currentUser.id ||
+           (bookedBooking.matchPlayers && bookedBooking.matchPlayers.some(p =>
+             p.name === currentUser.name || (p.email && currentUser.email && p.email === currentUser.email)
+           )))
+
+        if (bookedBooking.openToJoin || isMyBooking) {
+          setSelectedBookedSlotId(bookedBooking.id)
+          setSelectedHours([]) // Clear other hours selection
+          return
+        }
       }
 
-      alert('This slot is already booked or is awaiting owner approval!')
+      showToast('This slot is already booked or is awaiting owner approval!', 'error')
       return // Booked or pending slot
     }
 
@@ -752,7 +842,7 @@ function App() {
 
   const handleCreateBooking = () => {
     if (!isLoggedIn) {
-      alert('You must log in to reserve a turf!')
+      showToast('You must sign in to reserve a turf!', 'error')
       setShowLoginModal(true)
       return
     }
@@ -871,14 +961,14 @@ function App() {
 
     setBookings(prev => [...prev, newBooking])
     setSelectedHours([])
-    alert(currentUser?.role === 'owner' ? 'Booking confirmed immediately!' : 'Booking requested! Owner approval pending.')
+    showToast(currentUser?.role === 'owner' ? 'Booking confirmed immediately!' : 'Booking requested! Owner approval pending.', currentUser?.role === 'owner' ? 'success' : 'info')
   }
 
   // Create Account with existing shadow profile tag strategy
   const handleRegister = (e) => {
     e.preventDefault()
     if (!regName || !regEmail) {
-      alert('Please fill out all fields!')
+      showToast('Please fill out all fields!', 'error')
       return
     }
 
@@ -911,7 +1001,7 @@ function App() {
         }
       }))
 
-      alert(`Claimed player profile! "${selectedShadowProfile.name}" is now linked to ${regEmail} with all past stats imported!`)
+      showAlert(`Claimed player profile! "${selectedShadowProfile.name}" is now linked to ${regEmail} with all past stats imported!`, 'Profile Claimed')
     } else {
       // Normal registration: use timestamp-based stable local ID
       newUser = {
@@ -924,7 +1014,7 @@ function App() {
         matches: regRole === 'player' ? 0 : null
       }
       setProfiles(prev => [...prev, newUser])
-      alert(`Account created successfully as ${regRole.toUpperCase()}!`)
+      showToast(`Account created successfully as ${regRole.toUpperCase()}!`, 'success')
     }
 
     setCurrentUser(newUser)
@@ -968,9 +1058,9 @@ function App() {
     setNewShadowEmail('')
     
     if (isShadow) {
-      alert(`Shadow Player Profile Created!\nName: ${newShadowName}\nClaim Code: ${claimCode}\nThis player can now register later and claim their stats!`)
+      showAlert(`Shadow Player Profile Created!\nName: ${newShadowName}\nClaim Code: ${claimCode}\nThis player can now register later and claim their stats!`, 'Shadow Profile Created')
     } else {
-      alert(`Profile Created!\nName: ${newShadowName}\nEmail: ${newShadowEmail}\nRole: ${roleToCreate.toUpperCase()}`)
+      showAlert(`Profile Created!\nName: ${newShadowName}\nEmail: ${newShadowEmail}\nRole: ${roleToCreate.toUpperCase()}`, 'Profile Created')
     }
   }
 
@@ -980,7 +1070,7 @@ function App() {
 
     const userCreatedCount = groups.filter(g => g.creator === currentUser.name).length
     if (currentUser.role === 'player' && userCreatedCount >= 2) {
-      alert('Error: You can only create a maximum of 2 groups!')
+      showToast('Error: You can only create a maximum of 2 groups!', 'error')
       return
     }
 
@@ -997,23 +1087,28 @@ function App() {
 
     setGroups(prev => [...prev, newGroupObj])
     setNewGroupName('')
-    alert(`Group "${newGroupName}" created successfully!`)
+    showToast(`Group "${newGroupName}" created successfully!`, 'success')
   }
 
   const handleAddGroupMember = (groupId, playerProfileId) => {
     const profile = profiles.find(p => p.id === playerProfileId)
     if (!profile) return
 
-    setGroups(prev => prev.map(group => {
-      if (group.id === groupId) {
-        const exists = group.members.some(m => m.name === profile.name || (profile.email && m.email === profile.email))
-        if (exists) {
-          alert('Player is already in this group!')
-          return group
-        }
+    const group = groups.find(g => g.id === groupId)
+    if (!group) return
+
+    const exists = group.members.some(m => m.name === profile.name || (profile.email && m.email === profile.email))
+    if (exists) {
+      showToast('Player is already in this group!', 'error')
+      return
+    }
+
+    showToast(`Added "${profile.name}" to group!`, 'success')
+    setGroups(prev => prev.map(g => {
+      if (g.id === groupId) {
         return {
-          ...group,
-          members: [...group.members, { 
+          ...g,
+          members: [...g.members, { 
             name: profile.name, 
             email: profile.email || null, 
             isShadow: profile.isShadow, 
@@ -1021,46 +1116,53 @@ function App() {
           }]
         }
       }
-      return group
+      return g
     }))
-    alert(`Added "${profile.name}" to group!`)
   }
 
   const handleRemoveGroupMember = (groupId, memberName) => {
-    setGroups(prev => prev.map(group => {
-      if (group.id === groupId) {
-        if (memberName === group.creator || (group.creator.includes('Rahul') && memberName.includes('Rahul'))) {
-          alert('Cannot remove the Group Creator!')
-          return group
-        }
+    const group = groups.find(g => g.id === groupId)
+    if (!group) return
+
+    if (memberName === group.creator || (group.creator.includes('Rahul') && memberName.includes('Rahul'))) {
+      showToast('Cannot remove the Group Creator!', 'error')
+      return
+    }
+
+    showToast(`Removed member "${memberName}" from group.`, 'info')
+    setGroups(prev => prev.map(g => {
+      if (g.id === groupId) {
         return {
-          ...group,
-          members: group.members.filter(m => m.name !== memberName)
+          ...g,
+          members: g.members.filter(m => m.name !== memberName)
         }
       }
-      return group
+      return g
     }))
-    alert(`Removed member "${memberName}" from group.`)
   }
 
   const handleJoinMatchRequest = (bookingId, count) => {
     if (!isLoggedIn) {
-      alert('You must log in to request to join a match!')
+      showToast('You must log in to request to join a match!', 'error')
       setShowLoginModal(true)
       return
     }
 
+    const booking = bookings.find(b => b.id === bookingId)
+    if (!booking) return
+
+    const alreadyRequested = booking.joinRequests?.some(r => r.playerName === currentUser.name)
+    if (alreadyRequested) {
+      showToast('You have already requested to join this match!', 'error')
+      return
+    }
+
+    showToast(`Join request sent to captain for ${count} player(s)!`, 'success')
     setBookings(prev => prev.map(b => {
       if (b.id === bookingId) {
-        const alreadyRequested = b.joinRequests.some(r => r.playerName === currentUser.name)
-        if (alreadyRequested) {
-          alert('You have already requested to join this match!')
-          return b
-        }
-        alert(`Join request sent to captain for ${count} player(s)!`)
         return {
           ...b,
-          joinRequests: [...b.joinRequests, { 
+          joinRequests: [...(b.joinRequests || []), { 
             id: 'jr_' + Date.now(), 
             playerName: currentUser.name, 
             email: currentUser.email || 'guest@play.com',
@@ -1073,24 +1175,26 @@ function App() {
   }
 
   const handleApproveJoinRequest = (bookingId, requestId) => {
+    const booking = bookings.find(b => b.id === bookingId)
+    if (!booking) return
+    const req = booking.joinRequests?.find(r => r.id === requestId)
+    if (!req) return
+
+    const count = req.count || 1
+    showToast(`Approved ${req.playerName}'s request to join with ${count} player(s)!`, 'success')
+
+    const newPlayers = []
+    for (let i = 0; i < count; i++) {
+      newPlayers.push({
+        name: i === 0 ? req.playerName : `${req.playerName} (Guest ${i})`,
+        email: i === 0 ? req.email : null,
+        isShadow: i > 0,
+        team: null
+      })
+    }
+
     setBookings(prev => prev.map(b => {
       if (b.id === bookingId) {
-        const req = b.joinRequests.find(r => r.id === requestId)
-        if (!req) return b
-
-        const count = req.count || 1
-        alert(`Approved ${req.playerName}'s request to join with ${count} player(s)!`)
-
-        const newPlayers = []
-        for (let i = 0; i < count; i++) {
-          newPlayers.push({
-            name: i === 0 ? req.playerName : `${req.playerName} (Guest ${i})`,
-            email: i === 0 ? req.email : null,
-            isShadow: i > 0,
-            team: null
-          })
-        }
-
         return {
           ...b,
           playerCount: b.playerCount + count,
@@ -1103,9 +1207,9 @@ function App() {
   }
 
   const handleRejectJoinRequest = (bookingId, requestId) => {
+    showToast('Join request rejected.', 'info')
     setBookings(prev => prev.map(b => {
       if (b.id === bookingId) {
-        alert('Join request rejected.')
         return {
           ...b,
           joinRequests: b.joinRequests.filter(r => r.id !== requestId)
@@ -1133,9 +1237,9 @@ function App() {
   }
 
   const handleRemoveMatchPlayer = (bookingId, playerName) => {
+    showToast(`Removed ${playerName} from match roster.`, 'info')
     setBookings(prev => prev.map(b => {
       if (b.id === bookingId) {
-        alert(`Removed ${playerName} from match roster.`)
         return {
           ...b,
           playerCount: Math.max(0, b.playerCount - 1),
@@ -1150,18 +1254,22 @@ function App() {
     const profile = profiles.find(p => p.id === playerProfileId)
     if (!profile) return
 
+    const booking = bookings.find(b => b.id === bookingId)
+    if (!booking) return
+
+    const exists = booking.matchPlayers?.some(p => p.name === profile.name)
+    if (exists) {
+      showToast('Player is already in the match roster!', 'error')
+      return
+    }
+
+    showToast(`Added ${profile.name} to match roster.`, 'success')
     setBookings(prev => prev.map(b => {
       if (b.id === bookingId) {
-        const exists = b.matchPlayers.some(p => p.name === profile.name)
-        if (exists) {
-          alert('Player is already in the match roster!')
-          return b
-        }
-        alert(`Added ${profile.name} to match roster.`)
         return {
           ...b,
           playerCount: b.playerCount + 1,
-          matchPlayers: [...b.matchPlayers, {
+          matchPlayers: [...(b.matchPlayers || []), {
             name: profile.name,
             email: profile.email || null,
             isShadow: profile.isShadow,
@@ -1189,9 +1297,9 @@ function App() {
   }
 
   const handleOwnerApproveBooking = (bookingId) => {
+    showToast('Booking Approved Successfully!', 'success')
     setBookings(prev => prev.map(b => {
       if (b.id === bookingId) {
-        alert('Booking Approved Successfully!')
         return { ...b, ownerApproved: true, status: 'booked_private' }
       }
       return b
@@ -1199,9 +1307,9 @@ function App() {
   }
 
   const handleOwnerRejectBooking = (bookingId) => {
+    showToast('Booking Rejected and slot freed.', 'info')
     setBookings(prev => prev.filter(b => b.id !== bookingId))
     setSelectedHours([])
-    alert('Booking Rejected and slot freed.')
   }
 
   // Claim/Link Shadow Profile click
@@ -1384,7 +1492,7 @@ function App() {
                   background: 'var(--accent-football)',
                   animation: 'pulse 1.5s infinite'
                 }}></span>
-                <h4 style={{ fontSize: '15px', fontWeight: '800', color: '#fff', fontFamily: 'var(--font-heading)' }}>
+                <h4 style={{ fontSize: '15px', fontWeight: '800', color: 'var(--text-main)', fontFamily: 'var(--font-heading)' }}>
                   Active Match Booking Now!
                 </h4>
               </div>
@@ -1939,7 +2047,7 @@ function App() {
                       <h3 style={{ fontSize: '15px', fontWeight: '800', marginBottom: '4px' }}>🔦 Floodlight Peak Rate Boundary</h3>
                       <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '14px' }}>Slots at or after this hour incur an extra ₹100/hour</p>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                        <select className="role-selector" value={floodlightStartHour} onChange={e => { setFloodlightStartHour(parseInt(e.target.value)); alert(`Peak pricing now starts at ${e.target.value}:00`) }}>
+                        <select className="role-selector" value={floodlightStartHour} onChange={e => { setFloodlightStartHour(parseInt(e.target.value)); showToast(`Peak pricing now starts at ${e.target.value}:00`, 'info') }}>
                           <option value="17">05:00 PM</option>
                           <option value="18">06:00 PM</option>
                           <option value="19">07:00 PM</option>
@@ -2075,7 +2183,7 @@ function App() {
 
                               {/* Expanded: scorecard */}
                               {isExpanded && (
-                                <div style={{ borderTop: '1px solid var(--border-glow)', padding: '16px 20px', background: 'rgba(0,0,0,0.15)' }}>
+                                <div style={{ borderTop: '1px solid var(--border-glow)', padding: '16px 20px', background: 'var(--bg-dark)' }}>
                                   {/* Team lineups */}
                                   <div className="match-lineups-grid" style={{ marginBottom: '16px' }}>
                                     {[
@@ -2096,7 +2204,7 @@ function App() {
 
                                   {/* Scorecard */}
                                   {booking.scoreCard && booking.scoreCard.result !== 'Match is scheduled' ? (
-                                    <div style={{ background: 'rgba(0,0,0,0.2)', border: '1px solid var(--border-glow)', borderRadius: '10px', padding: '14px' }}>
+                                    <div style={{ background: 'var(--bg-dark)', border: '1px solid var(--border-glow)', borderRadius: '10px', padding: '14px' }}>
                                       <div style={{ fontSize: '10px', textTransform: 'uppercase', fontWeight: 'bold', color: 'var(--accent-football)', marginBottom: '10px', letterSpacing: '0.5px' }}>Scorecard Summary</div>
                                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                                         <span style={{ fontWeight: 'bold' }}>{booking.scoreCard.team1}</span>
@@ -2310,7 +2418,7 @@ function App() {
                             <span style={{ fontWeight: '800', fontSize: '16px' }}>{b.teamName} Live Match</span>
                           </div>
                           <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                            {isCricket ? '🏏 Cricket' : '⚽ Football'} · Turf {b.turfId} · Score: <strong style={{ color: '#fff', fontFamily: 'monospace', fontSize: '15px' }}>{scoreText}</strong>
+                            {isCricket ? '🏏 Cricket' : '⚽ Football'} · Turf {b.turfId} · Score: <strong style={{ color: 'var(--text-main)', fontFamily: 'monospace', fontSize: '15px' }}>{scoreText}</strong>
                           </div>
                           {isCricket && b.scoreCard?.striker && (
                             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
@@ -2391,6 +2499,18 @@ function App() {
                       >
                         <div className="blueprint-label">Turf 2 (Top)</div>
                         <div className="blueprint-sublabel">AstroTurf Pitch</div>
+                        <div style={{
+                          fontSize: '11px',
+                          marginTop: '6px',
+                          color: selectedTurf === 2 ? '#050608' : '#00dc64',
+                          fontWeight: '800',
+                          background: selectedTurf === 2 ? '#00dc64' : 'rgba(0, 220, 100, 0.1)',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          display: 'inline-block'
+                        }}>
+                          {getAvailableSlotsCount(2)} slots left
+                        </div>
                       </div>
                       <div 
                         className={`blueprint-turf-card ${selectedTurf === 1 ? 'active' : ''}`}
@@ -2398,6 +2518,18 @@ function App() {
                       >
                         <div className="blueprint-label">Turf 1 (Bottom)</div>
                         <div className="blueprint-sublabel">Clay Pitch</div>
+                        <div style={{
+                          fontSize: '11px',
+                          marginTop: '6px',
+                          color: selectedTurf === 1 ? '#050608' : '#00dc64',
+                          fontWeight: '800',
+                          background: selectedTurf === 1 ? '#00dc64' : 'rgba(0, 220, 100, 0.1)',
+                          padding: '2px 8px',
+                          borderRadius: '12px',
+                          display: 'inline-block'
+                        }}>
+                          {getAvailableSlotsCount(1)} slots left
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2426,6 +2558,67 @@ function App() {
                 </h2>
                 
                 <div className="slots-container">
+                  {/* ── My Bookings Today strip ── */}
+                  {(() => {
+                    const myBookingsToday = isLoggedIn && currentUser
+                      ? bookings.filter(b =>
+                          b.turfId === selectedTurf &&
+                          b.dateIndex === selectedDateIndex &&
+                          b.status !== 'rejected' && b.status !== 'cancelled' &&
+                          (b.captainName === currentUser.name ||
+                           b.booker_id === currentUser.id ||
+                           (b.matchPlayers && b.matchPlayers.some(p => p.name === currentUser.name || (p.email && currentUser.email && p.email === currentUser.email))))
+                        )
+                      : []
+                    if (!myBookingsToday.length) return null
+                    return (
+                      <div style={{
+                        marginBottom: '20px',
+                        background: 'linear-gradient(135deg, rgba(0,220,100,0.07) 0%, rgba(255,215,0,0.05) 100%)',
+                        border: '1px solid rgba(0,220,100,0.25)',
+                        borderRadius: '14px',
+                        padding: '14px 16px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        flexWrap: 'wrap'
+                      }}>
+                        <span style={{ fontSize: '22px', flexShrink: 0 }}>🎉</span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '12px', fontWeight: '800', color: '#00dc64', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>
+                            Your Booking{myBookingsToday.length > 1 ? 's' : ''} on This Turf
+                          </div>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                            {myBookingsToday.map(b => (
+                              <span key={b.id} style={{
+                                fontSize: '11px',
+                                background: 'rgba(0,220,100,0.12)',
+                                border: '1px solid rgba(0,220,100,0.3)',
+                                borderRadius: '20px',
+                                padding: '3px 10px',
+                                color: '#e8f5e8',
+                                fontWeight: '600',
+                                display: 'flex', alignItems: 'center', gap: '5px',
+                                cursor: 'pointer'
+                              }}
+                              onClick={() => {
+                                setSelectedBookedSlotId(b.id)
+                                setSelectedHours([])
+                              }}>
+                                {b.sportId === 'cricket' ? '🏏' : b.sportId === 'football' ? '⚽' : '🏆'}
+                                {b.time}
+                                {b.duration > 1 ? ` — ${b.duration}h` : ''}
+                                {b.status === 'pending_approval'
+                                  ? <span style={{ color: 'orange' }}> · Pending ⏳</span>
+                                  : <span style={{ color: '#00dc64' }}> · Confirmed ✓</span>}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
                   {['Morning', 'Afternoon', 'Evening', 'Night'].map((period) => {
                     const periodSlots = slotsData.filter(s => s.period === period)
                     return (
@@ -2473,7 +2666,7 @@ function App() {
                               btnStyle.opacity = 0.95
                               btnStyle.position = 'relative'
                               btnStyle.overflow = 'hidden'
-                              btnStyle.color = '#fff'
+                              btnStyle.color = 'var(--text-main)'
                               btnStyle.textShadow = '0 1px 4px rgba(0,0,0,0.95)'
                               btnStyle.backgroundSize = 'cover'
                               btnStyle.backgroundPosition = 'center'
@@ -2490,16 +2683,54 @@ function App() {
                               }
                             }
 
+                            // ── Detect if this slot belongs to the current user ──
+                            const isMyBooking = isLoggedIn && currentUser && bookingItem &&
+                              (bookingItem.captainName === currentUser.name ||
+                               bookingItem.booker_id === currentUser.id ||
+                               (bookingItem.matchPlayers && bookingItem.matchPlayers.some(p =>
+                                 p.name === currentUser.name || (p.email && currentUser.email && p.email === currentUser.email)
+                               )))
+
+                            // ── Override: my booking gets special glow treatment ──
+                            if (isMyBooking) {
+                              btnStyle.opacity = 1
+                              btnStyle.cursor = 'pointer'
+                              btnStyle.border = '1.5px solid rgba(0,220,100,0.85)'
+                              btnStyle.boxShadow = '0 0 14px rgba(0,220,100,0.35), inset 0 0 20px rgba(0,220,100,0.06)'
+                              if (bookingItem.status === 'pending_approval') {
+                                btnStyle.border = '1.5px solid rgba(255,170,0,0.85)'
+                                btnStyle.boxShadow = '0 0 14px rgba(255,170,0,0.3), inset 0 0 20px rgba(255,170,0,0.06)'
+                              }
+                            }
+
                             return (
                               <button
                                 key={slot.time}
                                 className={`slot-btn ${btnClass} ${isSelected ? 'active' : ''}`}
                                 onClick={() => handleSlotClick(slot)}
                                 style={btnStyle}
-                                disabled={isBooked && !bookingItem?.openToJoin}
+                                disabled={isBooked && !bookingItem?.openToJoin && !isMyBooking}
                               >
                                 <span className="slot-time">{slot.time}</span>
-                                <span className="slot-status-badge">{statusText}</span>
+                                {isMyBooking ? (
+                                  <span style={{
+                                    fontSize: '9px',
+                                    fontWeight: '800',
+                                    marginTop: '4px',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    background: bookingItem.status === 'pending_approval'
+                                      ? 'rgba(255,170,0,0.2)'
+                                      : 'rgba(0,220,100,0.2)',
+                                    color: bookingItem.status === 'pending_approval' ? '#ffaa00' : '#00dc64',
+                                    letterSpacing: '0.3px',
+                                    display: 'flex', alignItems: 'center', gap: '3px'
+                                  }}>
+                                    {bookingItem.status === 'pending_approval' ? '⏳ Pending' : '🎉 Yours!'}
+                                  </span>
+                                ) : (
+                                  <span className="slot-status-badge">{statusText}</span>
+                                )}
                               </button>
                             )
                           })}
@@ -2552,7 +2783,7 @@ function App() {
                       </div>
 
                       {/* Display Lineups for Open Match */}
-                      <div style={{ background: 'rgba(0,0,0,0.15)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-glow)', marginBottom: '16px', textAlign: 'left' }}>
+                      <div style={{ background: 'var(--bg-dark)', padding: '12px', borderRadius: '8px', border: '1px solid var(--border-glow)', marginBottom: '16px', textAlign: 'left' }}>
                         <div style={{ fontSize: '11px', textTransform: 'uppercase', fontWeight: 'bold', color: 'var(--accent-football)', marginBottom: '6px', textAlign: 'center' }}>
                           Current Match Lineups
                         </div>
@@ -2895,17 +3126,18 @@ function App() {
             setScorecardStep('scoring')
           }
 
-          const handleAddFootballGoal = (teamNum) => {
+          const handleAddFootballGoal = async (teamNum) => {
             const teamPlayers = teamNum === 1 ? teamAPlayers : teamBPlayers
             const defaultScorerName = teamPlayers[0]?.name || (teamNum === 1 ? 'Team A Player' : 'Team B Player')
-            const scorerName = prompt(
-              `Enter goal scorer's name for ${teamNum === 1 ? (booking.scoreCard?.team1 || 'Team A') : (booking.scoreCard?.team2 || 'Team B')}:\nAvailable players: ` +
+            const scorerName = await showPrompt(
+              `Enter goal scorer's name for ${teamNum === 1 ? (booking.scoreCard?.team1 || 'Team A') : (booking.scoreCard?.team2 || 'Team B')}.\nAvailable players: ` +
               teamPlayers.map(p => p.name).join(', '),
-              defaultScorerName
+              defaultScorerName,
+              'Scorer name'
             )
             if (scorerName === null) return // cancelled
 
-            const minuteStr = prompt("Enter goal minute (1 - 90):", "15")
+            const minuteStr = await showPrompt("Enter goal minute (1 - 90):", "15", "Goal minute")
             if (minuteStr === null) return // cancelled
             const minute = parseInt(minuteStr, 10) || 15
 
@@ -2938,7 +3170,7 @@ function App() {
               resultText = `Match tied ${score1} - ${score2}`
             }
 
-            alert(`Match ended! ${resultText}`)
+            showAlert(`Match ended!\n${resultText}`, 'Match Completed')
             handleUpdateScorecard(booking.id, {
               result: resultText,
               isCompleted: true
@@ -2955,7 +3187,7 @@ function App() {
           }
 
           const handleCoinFlip = () => {
-            setTossCoinState({ spinning: true, winner: null, choice: null })
+            setTossCoinState({ spinning: true, winner: null, choice: null, showModal: true })
             setTimeout(() => {
               const randWinner = Math.random() < 0.5 ? 1 : 2
               const choices = ['Batting', 'Bowling']
@@ -2964,10 +3196,15 @@ function App() {
               setTossCoinState({
                 spinning: false,
                 winner: randWinner,
-                choice: randChoice
+                choice: randChoice,
+                showModal: true
               })
               setTossWinnerOverride(randWinner)
               setTossChoiceOverride(randChoice)
+
+              setTimeout(() => {
+                setTossCoinState(prev => ({ ...prev, showModal: false }))
+              }, 3000)
             }, 2500)
           }
 
@@ -2995,11 +3232,11 @@ function App() {
           const handleSetupPlayers = (e) => {
             e.preventDefault()
             if (!batsmanStriker || !batsmanNonStriker || !currentBowler) {
-              alert('Please select Striker, Non-Striker, and Bowler!')
+              showToast('Please select Striker, Non-Striker, and Bowler!', 'error')
               return
             }
             if (batsmanStriker === batsmanNonStriker) {
-              alert('Striker and Non-Striker cannot be the same player!')
+              showToast('Striker and Non-Striker cannot be the same player!', 'error')
               return
             }
 
@@ -3084,7 +3321,7 @@ function App() {
           const triggerDeclareInnings = (updatedSc) => {
             const scorecard = updatedSc
             if (scorecard.battingTeam === 1) {
-              alert('First innings ended (All Out)! Swapping batting team.')
+              showAlert('First innings ended! Swapping batting team.', 'Innings Over')
               handleUpdateScorecard(booking.id, {
                 ...updatedSc,
                 battingTeam: 2,
@@ -3115,7 +3352,7 @@ function App() {
               } else {
                 resultText = 'Match tied!'
               }
-              alert(`Match ended! ${resultText}`)
+              showAlert(`Match ended!\n${resultText}`, 'Match Completed')
               handleUpdateScorecard(booking.id, {
                 ...updatedSc,
                 result: resultText,
@@ -3126,7 +3363,7 @@ function App() {
             }
           }
 
-          const recordBallOnState = (baseSc, type, runs = 0, isEditMode = false, oldLabel = '') => {
+          const recordBallOnState = (baseSc, type, runs = 0, isEditMode = false, oldLabel = '', allOutConfirmed = false, dismissalInfo = '') => {
             const scorecard = baseSc
             let newScore1 = scorecard.score1
             let newScore2 = scorecard.score2
@@ -3192,8 +3429,7 @@ function App() {
             if (type === 'wicket' || type === 'runs_wicket') {
               const maxWickets = scorecard.singleBattingAllowed ? battingPlayersList.length : Math.max(1, battingPlayersList.length - 1)
               if (totalWickets >= maxWickets) {
-                const confirmAllOut = window.confirm("All wickets have fallen. Is the team indeed all out?")
-                if (confirmAllOut) {
+                if (allOutConfirmed) {
                   allOutTriggered = true
                 } else {
                   totalWickets -= 1
@@ -3216,7 +3452,7 @@ function App() {
               if (ballsInOver >= 6) {
                 completedOvers += 1
                 ballsInOver = 0
-                alert('Over completed! Change the bowler.')
+                showToast('Over completed! Change the bowler.', 'info')
               }
             }
 
@@ -3257,16 +3493,25 @@ function App() {
             // Accumulate detailed batsman/bowler stats
             const currentBattingStats = { ...(scorecard.battingStats || {}) }
             if (scorecard.striker) {
-              const currentS = currentBattingStats[scorecard.striker] || { runs: 0, balls: 0, out: false }
+              const currentS = currentBattingStats[scorecard.striker] || { runs: 0, balls: 0, fours: 0, sixes: 0, out: false }
+              let newFours = currentS.fours || 0
+              let newSixes = currentS.sixes || 0
+              if (type === 'run') {
+                if (runs === 4) newFours++
+                if (runs === 6) newSixes++
+              }
               currentBattingStats[scorecard.striker] = {
                 ...currentS,
                 runs: currentS.runs + strikerRunsInc,
                 balls: currentS.balls + strikerBallsInc,
-                out: (type === 'wicket' || type === 'runs_wicket') ? true : currentS.out
+                fours: newFours,
+                sixes: newSixes,
+                out: (type === 'wicket' || type === 'runs_wicket') ? true : currentS.out,
+                dismissalInfo: (type === 'wicket' || type === 'runs_wicket') ? dismissalInfo : currentS.dismissalInfo
               }
             }
             if (scorecard.nonStriker && !currentBattingStats[scorecard.nonStriker]) {
-              currentBattingStats[scorecard.nonStriker] = { runs: 0, balls: 0, out: false }
+              currentBattingStats[scorecard.nonStriker] = { runs: 0, balls: 0, fours: 0, sixes: 0, out: false }
             }
 
             const currentBowlingStats = { ...(scorecard.bowlingStats || {}) }
@@ -3311,24 +3556,75 @@ function App() {
             if (allOutTriggered) {
               resultState._allOutTriggered = true
             }
+            if (scorecard.matchOvers && completedOvers >= scorecard.matchOvers) {
+              resultState._oversCompleted = true
+            }
 
             return resultState
           }
 
-          const handleRecordBall = (type, runs = 0) => {
+          const handleRecordBall = async (type, runs = 0) => {
             const scorecard = booking.scoreCard
             if (!scorecard) return
+
+            let allOutConfirmed = false
+            if (type === 'wicket' || type === 'runs_wicket') {
+              const runsWicketsStr = scorecard.battingTeam === 1 ? scorecard.score1 : scorecard.score2
+              const wicketsCount = parseInt(runsWicketsStr.split('/')[1], 10) || 0
+              
+              const maxWickets = scorecard.singleBattingAllowed ? battingPlayersList.length : Math.max(1, battingPlayersList.length - 1)
+              if (wicketsCount + 1 >= maxWickets) {
+                allOutConfirmed = await showConfirm("All wickets have fallen. Is the team indeed all out?", "Confirm All Out")
+              }
+            }
+
+            let dismissalInfoStr = ''
+            if (type === 'wicket' || type === 'runs_wicket') {
+              const dismissalType = await showSelectPrompt(
+                "How did the batsman get out?",
+                ['Catch', 'Bowled', 'Run Out', 'Stumped', 'LBW', 'Hit Wicket', 'Retired'],
+                'Catch',
+                "Dismissal Info"
+              )
+              dismissalInfoStr = dismissalType || "Out"
+            }
 
             const scCopy = deepCopyScorecard(scorecard)
             const newUndoStack = [...(scorecard.undoStack || []), scCopy].slice(-15)
 
-            const nextScState = recordBallOnState(scorecard, type, runs, false)
+            const nextScState = recordBallOnState(scorecard, type, runs, false, '', allOutConfirmed, dismissalInfoStr)
             nextScState.undoStack = newUndoStack
 
             if (nextScState._allOutTriggered) {
               delete nextScState._allOutTriggered
               triggerDeclareInnings(nextScState)
+            } else if (nextScState._oversCompleted) {
+              delete nextScState._oversCompleted
+              triggerDeclareInnings(nextScState)
             } else {
+              const legalCount = nextScState.ballsThisOver?.filter(b => {
+                const label = typeof b === 'object' && b !== null ? b.label : b
+                return !['Wd', 'Nb'].some(ext => typeof label === 'string' && label.includes(ext))
+              }).length || 0
+
+              if (legalCount >= 6) {
+                const runsThisOver = nextScState.ballsThisOver?.reduce((sum, b) => {
+                  const label = typeof b === 'object' && b !== null ? b.label : b
+                  if (typeof label === 'string' && label.includes('Wd')) return sum + 1 + (parseInt(label.split('+')[1]) || 0)
+                  if (typeof label === 'string' && label.includes('Nb')) return sum + 1 + (parseInt(label.split('+')[1]) || 0)
+                  return sum + (parseInt(label) || 0)
+                }, 0)
+                
+                if (runsThisOver === 0 && nextScState.bowler) {
+                   const stats = nextScState.bowlingStats[nextScState.bowler] || { runs: 0, balls: 0, wickets: 0, maidens: 0 }
+                   stats.maidens = (stats.maidens || 0) + 1
+                   nextScState.bowlingStats[nextScState.bowler] = stats
+                }
+                
+                nextScState.lastBowler = nextScState._retiredBowlerThisOver ? `${nextScState._retiredBowlerThisOver},${nextScState.bowler}` : nextScState.bowler
+                delete nextScState._retiredBowlerThisOver
+                nextScState.bowler = null
+              }
               handleUpdateScorecard(booking.id, nextScState)
             }
 
@@ -3384,13 +3680,14 @@ function App() {
             const scorecard = booking.scoreCard
             const currentBowlingStats = { ...(scorecard.bowlingStats || {}) }
             if (!currentBowlingStats[name]) {
-              currentBowlingStats[name] = { runs: 0, balls: 0, wickets: 0 }
+              currentBowlingStats[name] = { runs: 0, balls: 0, wickets: 0, maidens: 0 }
             }
             handleUpdateScorecard(booking.id, {
               bowler: name,
               bowlerBalls: 0,
               bowlerRuns: 0,
               bowlerWickets: 0,
+              ballsThisOver: [],
               bowlingStats: currentBowlingStats
             })
           }
@@ -3440,10 +3737,63 @@ function App() {
             setBatsmanStriker('')
           }
 
+          const handleNonStrikerRetiredHurt = () => {
+            const scorecard = booking.scoreCard
+            if (!scorecard || !scorecard.nonStriker) return
+            
+            const currentBattingStats = { ...(scorecard.battingStats || {}) }
+            const nonStrikerStats = currentBattingStats[scorecard.nonStriker] || { runs: 0, balls: 0, out: false }
+            
+            currentBattingStats[scorecard.nonStriker] = {
+              ...nonStrikerStats,
+              retired: true,
+              out: false
+            }
+
+            const scCopy = deepCopyScorecard(scorecard)
+            const newUndoStack = [...(scorecard.undoStack || []), scCopy].slice(-15)
+
+            handleUpdateScorecard(booking.id, {
+              nonStriker: '',
+              nonStrikerRuns: 0,
+              nonStrikerBalls: 0,
+              battingStats: currentBattingStats,
+              undoStack: newUndoStack
+            })
+            
+            setBatsmanNonStriker('')
+          }
+
+          const handleBowlerRetiredHurt = () => {
+            const scorecard = booking.scoreCard
+            if (!scorecard || !scorecard.bowler) return
+            
+            const currentBowlingStats = { ...(scorecard.bowlingStats || {}) }
+            const bowlerStats = currentBowlingStats[scorecard.bowler] || { runs: 0, balls: 0, wickets: 0 }
+            
+            currentBowlingStats[scorecard.bowler] = {
+              ...bowlerStats,
+              retired: true
+            }
+
+            const scCopy = deepCopyScorecard(scorecard)
+            const newUndoStack = [...(scorecard.undoStack || []), scCopy].slice(-15)
+
+            handleUpdateScorecard(booking.id, {
+              _retiredBowlerThisOver: scorecard.bowler,
+              bowler: null,
+              bowlerBalls: 0,
+              bowlerRuns: 0,
+              bowlerWickets: 0,
+              bowlingStats: currentBowlingStats,
+              undoStack: newUndoStack
+            })
+          }
+
           const handleUndoLastBall = () => {
             const scorecard = booking.scoreCard
             if (!scorecard || !scorecard.undoStack || scorecard.undoStack.length === 0) {
-              alert("No balls to undo!")
+              showToast("No balls to undo!", "error")
               return
             }
             
@@ -3465,15 +3815,15 @@ function App() {
             else setCurrentBowler('')
           }
 
-          const handleEditLastBall = () => {
+          const handleEditLastBall = async () => {
             const scorecard = booking.scoreCard
             if (!scorecard || !scorecard.ballsThisOver || scorecard.ballsThisOver.length === 0) {
-              alert("No balls in this over to edit!")
+              showToast("No balls in this over to edit!", "error")
               return
             }
 
             if (!scorecard.undoStack || scorecard.undoStack.length === 0) {
-              alert("No undo history available to edit the last ball!")
+              showToast("No undo history available to edit the last ball!", "error")
               return
             }
 
@@ -3481,7 +3831,7 @@ function App() {
             const oldLabel = (typeof lastBallVal === 'object') ? lastBallVal.label : lastBallVal
 
             const choicesStr = "Enter new outcome:\n0, 1, 2, 3, 4, 6\nwd (Wide)\nnb (No Ball)\nw (Wicket)\nwd+runs (Wide + runs)\nnb+runs (No Ball + runs)\nruns+w (Runs + wicket)"
-            const input = prompt(choicesStr, oldLabel)
+            const input = await showPrompt(choicesStr, oldLabel, "outcome (e.g. 1, wd, nb, w, wd+1)", "Edit Ball Outcome")
             if (input === null) return
 
             let type = 'run'
@@ -3499,27 +3849,47 @@ function App() {
               runs = 0
             } else if (normalizedInput === 'w') {
               type = 'wicket'
-            } else if (normalizedInput === 'wd+runs') {
-              const extraRuns = parseInt(prompt("Enter runs ran on wide ball:", "1"), 10) || 1
+            } else if (normalizedInput === 'wd+runs' || normalizedInput.startsWith('wd+')) {
+              const defaultVal = normalizedInput.includes('+') ? normalizedInput.split('+')[1] : "1"
+              const val = await showPrompt("Enter runs ran on wide ball:", defaultVal, "Extra runs")
+              if (val === null) return
+              const extraRuns = parseInt(val, 10) || 1
               type = 'wide'
               runs = extraRuns
-            } else if (normalizedInput === 'nb+runs') {
-              const extraRuns = parseInt(prompt("Enter runs ran on no ball:", "1"), 10) || 1
+            } else if (normalizedInput === 'nb+runs' || normalizedInput.startsWith('nb+')) {
+              const defaultVal = normalizedInput.includes('+') ? normalizedInput.split('+')[1] : "1"
+              const val = await showPrompt("Enter runs ran on no ball:", defaultVal, "Extra runs")
+              if (val === null) return
+              const extraRuns = parseInt(val, 10) || 1
               type = 'no_ball'
               runs = extraRuns
-            } else if (normalizedInput === 'runs+w') {
-              const runsRan = parseInt(prompt("Enter runs completed before run-out wicket:", "1"), 10) || 1
+            } else if (normalizedInput === 'runs+w' || normalizedInput.endsWith('+w') || normalizedInput.endsWith('+wicket')) {
+              const defaultVal = normalizedInput.includes('+') ? normalizedInput.split('+')[0] : "1"
+              const val = await showPrompt("Enter runs completed before run-out wicket:", defaultVal, "Runs completed")
+              if (val === null) return
+              const runsRan = parseInt(val, 10) || 1
               type = 'runs_wicket'
               runs = runsRan
             } else {
-              alert("Invalid input! Ball not edited.")
+              showToast("Invalid input! Ball not edited.", "error")
               return
             }
 
             const newUndoStack = [...scorecard.undoStack]
             const prevState = newUndoStack.pop()
 
-            const nextScState = recordBallOnState(prevState, type, runs, true, oldLabel)
+            let allOutConfirmed = false
+            if (type === 'wicket' || type === 'runs_wicket') {
+              const runsWicketsStr = prevState.battingTeam === 1 ? prevState.score1 : prevState.score2
+              const wicketsCount = parseInt(runsWicketsStr.split('/')[1], 10) || 0
+              
+              const maxWickets = prevState.singleBattingAllowed ? battingPlayersList.length : Math.max(1, battingPlayersList.length - 1)
+              if (wicketsCount + 1 >= maxWickets) {
+                allOutConfirmed = await showConfirm("All wickets have fallen. Is the team indeed all out?", "Confirm All Out")
+              }
+            }
+
+            const nextScState = recordBallOnState(prevState, type, runs, true, oldLabel, allOutConfirmed)
             nextScState.undoStack = newUndoStack
 
             if (nextScState._allOutTriggered) {
@@ -3579,10 +3949,10 @@ function App() {
                       Select who is playing today from your booking roster, add additional players if needed, then split them into two teams.
                     </p>
 
-                    <div className="roster-select-grid" style={{ background: 'rgba(0,0,0,0.15)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
+                    <div className="roster-select-grid" style={{ background: 'var(--bg-dark)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
                       {/* Left: Player Selection Roster */}
                       <div>
-                        <h4 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: '#fff' }}>
+                        <h4 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: 'var(--text-main)' }}>
                           Select Playing Roster ({activePlayingNames.length} selected)
                         </h4>
                         
@@ -3616,11 +3986,11 @@ function App() {
                                     }}
                                     style={{ cursor: 'pointer', accentColor: 'var(--accent-football)' }}
                                   />
-                                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: isChecked ? '#fff' : 'var(--text-muted)' }}>
+                                  <span style={{ fontSize: '13px', fontWeight: 'bold', color: isChecked ? 'var(--text-main)' : 'var(--text-muted)' }}>
                                     {p.name}
                                   </span>
                                 </div>
-                                <span style={{ fontSize: '10px', textTransform: 'uppercase', padding: '2px 6px', borderRadius: '4px', background: p.isShadow ? 'rgba(255,255,255,0.05)' : 'rgba(0,150,255,0.1)', color: p.isShadow ? 'var(--text-muted)' : '#00bfff' }}>
+                                <span style={{ fontSize: '10px', textTransform: 'uppercase', padding: '2px 6px', borderRadius: '4px', background: p.isShadow ? 'var(--bg-card-hover)' : 'rgba(0,150,255,0.1)', color: p.isShadow ? 'var(--text-muted)' : '#00bfff' }}>
                                   {p.isShadow ? 'Shadow' : 'Player'}
                                 </span>
                               </div>
@@ -3651,7 +4021,7 @@ function App() {
                                 if (!newMatchPlayerName.trim()) return;
                                 const nameExists = booking.matchPlayers && booking.matchPlayers.some(p => p.name.toLowerCase() === newMatchPlayerName.trim().toLowerCase());
                                 if (nameExists) {
-                                  alert('A player with this name is already in the roster.');
+                                  showToast('A player with this name is already in the roster.', 'error');
                                   return;
                                 }
                                 const newPlayerObj = { name: newMatchPlayerName.trim(), email: null, isShadow: true, team: null };
@@ -3676,7 +4046,7 @@ function App() {
 
                       {/* Right: Quick Search and Add existing Shadow Profiles */}
                       <div className="roster-select-right">
-                        <h4 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: '#fff' }}>
+                        <h4 style={{ fontSize: '14px', fontWeight: 'bold', marginBottom: '12px', color: 'var(--text-main)' }}>
                           Add Existing Profiles
                         </h4>
                         <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '10px' }}>
@@ -3781,7 +4151,7 @@ function App() {
                                 syncSplit();
                               }
 
-                              alert('Teams Split Successfully!');
+                              showToast('Teams Split Successfully!', 'success');
                             }}
                           >
                             ⚡ Auto-Split Teams
@@ -3909,7 +4279,7 @@ function App() {
                           >
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span>{p.name}</span>
-                              <button style={{ background: 'rgba(255,255,255,0.05)', border: 'none', color: 'var(--text-muted)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }} onClick={() => handleAssignMatchPlayerTeam(booking.id, p.name, null)}>Remove</button>
+                              <button style={{ background: 'var(--bg-card-hover)', border: 'none', color: 'var(--text-muted)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }} onClick={() => handleAssignMatchPlayerTeam(booking.id, p.name, null)}>Remove</button>
                             </div>
                           </div>
                         ))}
@@ -3934,7 +4304,7 @@ function App() {
                           >
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span>{p.name}</span>
-                              <button style={{ background: 'rgba(255,255,255,0.05)', border: 'none', color: 'var(--text-muted)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }} onClick={() => handleAssignMatchPlayerTeam(booking.id, p.name, null)}>Remove</button>
+                              <button style={{ background: 'var(--bg-card-hover)', border: 'none', color: 'var(--text-muted)', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', cursor: 'pointer' }} onClick={() => handleAssignMatchPlayerTeam(booking.id, p.name, null)}>Remove</button>
                             </div>
                           </div>
                         ))}
@@ -3983,7 +4353,7 @@ function App() {
                       Enter the details of the toss winner, choice, match overs, and single-batting rules.
                     </p>
 
-                    <div style={{ background: 'rgba(0,0,0,0.15)', padding: '24px', borderRadius: '12px', border: '1px solid var(--border-glow)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                    <div style={{ background: 'var(--bg-dark)', padding: '24px', borderRadius: '12px', border: '1px solid var(--border-glow)', display: 'flex', flexDirection: 'column', gap: '20px' }}>
                       
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-glow)', paddingBottom: '16px' }}>
                         <div>
@@ -3996,7 +4366,7 @@ function App() {
                           onClick={(e) => {
                             e.preventDefault();
                             handleCoinFlip();
-                            alert("Flipping coin! Outcome will be applied automatically below.");
+                            showToast("Flipping coin! Outcome will be applied automatically below.", "info");
                           }}
                           disabled={tossCoinState.spinning}
                         >
@@ -4113,7 +4483,7 @@ function App() {
                       </div>
                     </div>
 
-                    <form onSubmit={handleSetupPlayers} style={{ background: 'rgba(0,0,0,0.15)', padding: '24px', borderRadius: '12px', border: '1px solid var(--border-glow)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <form onSubmit={handleSetupPlayers} style={{ background: 'var(--bg-dark)', padding: '24px', borderRadius: '12px', border: '1px solid var(--border-glow)', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                       <div className="active-players-setup-grid">
                         <div>
                           <label style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>
@@ -4197,10 +4567,10 @@ function App() {
                     return (
                       <div>
                         {/* Football Live Dashboard */}
-                        <div className="innings-dashboard-grid" style={{ background: 'rgba(0,0,0,0.2)', padding: '24px', borderRadius: '16px', border: '1px solid var(--border-glow)', marginBottom: '24px', display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', textAlign: 'center' }}>
+                        <div className="innings-dashboard-grid" style={{ background: 'var(--bg-dark)', padding: '24px', borderRadius: '16px', border: '1px solid var(--border-glow)', marginBottom: '24px', display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', textAlign: 'center' }}>
                           <div>
                             <span style={{ fontSize: '11px', textTransform: 'uppercase', fontWeight: 'bold', color: 'var(--accent-football)' }}>Team A</span>
-                            <h2 style={{ fontSize: '24px', fontWeight: '900', color: '#fff', marginTop: '4px' }}>{team1Name}</h2>
+                            <h2 style={{ fontSize: '24px', fontWeight: '900', color: 'var(--text-main)', marginTop: '4px' }}>{team1Name}</h2>
                           </div>
                           
                           <div style={{ padding: '0 32px' }}>
@@ -4212,7 +4582,7 @@ function App() {
 
                           <div>
                             <span style={{ fontSize: '11px', textTransform: 'uppercase', fontWeight: 'bold', color: 'var(--accent-cricket)' }}>Team B</span>
-                            <h2 style={{ fontSize: '24px', fontWeight: '900', color: '#fff', marginTop: '4px' }}>{team2Name}</h2>
+                            <h2 style={{ fontSize: '24px', fontWeight: '900', color: 'var(--text-main)', marginTop: '4px' }}>{team2Name}</h2>
                           </div>
                         </div>
 
@@ -4220,14 +4590,14 @@ function App() {
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
                           <button 
                             className="btn-book-action" 
-                            style={{ padding: '16px', background: 'rgba(0, 255, 102, 0.1)', border: '1px solid var(--accent-football)', color: '#fff', fontWeight: 'bold' }}
+                            style={{ padding: '16px', background: 'rgba(0, 255, 102, 0.1)', border: '1px solid var(--accent-football)', color: 'var(--text-main)', fontWeight: 'bold' }}
                             onClick={() => handleAddFootballGoal(1)}
                           >
                             ⚽ Goal for {team1Name}
                           </button>
                           <button 
                             className="btn-book-action" 
-                            style={{ padding: '16px', background: 'rgba(255, 71, 71, 0.1)', border: '1px solid var(--accent-cricket)', color: '#fff', fontWeight: 'bold' }}
+                            style={{ padding: '16px', background: 'rgba(255, 71, 71, 0.1)', border: '1px solid var(--accent-cricket)', color: 'var(--text-main)', fontWeight: 'bold' }}
                             onClick={() => handleAddFootballGoal(2)}
                           >
                             ⚽ Goal for {team2Name}
@@ -4235,7 +4605,7 @@ function App() {
                         </div>
 
                         {/* Goal Timeline / Logs */}
-                        <div style={{ background: 'rgba(0,0,0,0.15)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)', textAlign: 'left', marginBottom: '24px' }}>
+                        <div style={{ background: 'var(--bg-dark)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)', textAlign: 'left', marginBottom: '24px' }}>
                           <h4 style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--accent-football)', marginBottom: '12px', borderBottom: '1px solid var(--border-glow)', paddingBottom: '6px' }}>
                             Match Timeline
                           </h4>
@@ -4258,7 +4628,7 @@ function App() {
                         <div style={{ marginTop: '32px', display: 'flex', gap: '12px', borderTop: '1px solid var(--border-glow)', paddingTop: '20px' }}>
                           <button 
                             className="btn-book-action" 
-                            style={{ flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-glow)', color: '#fff' }}
+                            style={{ flex: 1, background: 'var(--bg-card-hover)', border: '1px solid var(--border-glow)', color: 'var(--text-main)' }}
                             onClick={() => setActiveScorecardBookingId(null)}
                           >
                             Save Match & Exit Scorecard
@@ -4280,15 +4650,36 @@ function App() {
                   const currentInningsScore = isBattingTeam1 ? sc.score1 : sc.score2
                   const currentInningsOvers = isBattingTeam1 ? sc.overs1 : sc.overs2
 
+                  const handleWideWithRuns = async () => {
+                    const val = await showPrompt("Enter runs ran on wide ball:", "1", "Extra runs")
+                    if (val === null) return
+                    const extraRuns = parseInt(val, 10) || 1
+                    handleRecordBall('wide', extraRuns)
+                  }
+
+                  const handleNoBallWithRuns = async () => {
+                    const val = await showPrompt("Enter runs ran on no ball:", "1", "Extra runs")
+                    if (val === null) return
+                    const extraRuns = parseInt(val, 10) || 1
+                    handleRecordBall('no_ball', extraRuns)
+                  }
+
+                  const handleRunsWithWicket = async () => {
+                    const val = await showPrompt("Enter runs completed before run-out wicket:", "1", "Runs completed")
+                    if (val === null) return
+                    const runsRan = parseInt(val, 10) || 1
+                    handleRecordBall('runs_wicket', runsRan)
+                  }
+
                   return (
                     <div>
                       {/* Innings Live Dashboard */}
-                      <div className="innings-dashboard-grid" style={{ background: 'rgba(0,0,0,0.2)', padding: '24px', borderRadius: '16px', border: '1px solid var(--border-glow)', marginBottom: '24px' }}>
+                      <div className="innings-dashboard-grid" style={{ background: 'var(--bg-dark)', padding: '24px', borderRadius: '16px', border: '1px solid var(--border-glow)', marginBottom: '24px' }}>
                         <div>
                           <span style={{ fontSize: '11px', textTransform: 'uppercase', fontWeight: 'bold', color: 'var(--accent-football)' }}>
                             Active Innings: {sc.battingTeam === 1 ? sc.team1 : sc.team2} is Batting
                           </span>
-                          <h1 style={{ fontSize: '48px', fontWeight: '900', color: '#fff', fontFamily: 'monospace', margin: '8px 0' }}>
+                          <h1 style={{ fontSize: '48px', fontWeight: '900', color: 'var(--text-main)', fontFamily: 'monospace', margin: '8px 0' }}>
                             {currentInningsScore} <span style={{ fontSize: '20px', color: 'var(--text-muted)', fontWeight: 'bold' }}>({currentInningsOvers} Overs)</span>
                           </h1>
                           <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
@@ -4308,7 +4699,7 @@ function App() {
                       <div className="active-stats-grid" style={{ marginBottom: '24px' }}>
                         
                         {/* Batsmen stats */}
-                        <div style={{ background: 'rgba(0,0,0,0.15)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
+                        <div style={{ background: 'var(--bg-dark)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
                           <div style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--accent-football)', fontWeight: 'bold', borderBottom: '1px solid var(--border-glow)', paddingBottom: '6px', marginBottom: '10px' }}>
                             Batsmen Stats
                           </div>
@@ -4333,8 +4724,17 @@ function App() {
                               <span style={{ fontFamily: 'monospace' }}>{sc.striker ? `${sc.strikerRuns || 0} (${sc.strikerBalls || 0})` : '-'}</span>
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: 'var(--text-muted)' }}>
-                              <span style={{ paddingLeft: '22px' }}>
+                              <span style={{ paddingLeft: '22px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                                 {sc.nonStriker || <span style={{ fontStyle: 'italic' }}>None</span>}
+                                {sc.nonStriker && (
+                                  <button 
+                                    className="role-selector" 
+                                    style={{ padding: '2px 6px', fontSize: '9px', borderColor: 'var(--text-muted)', color: 'var(--text-muted)', textTransform: 'uppercase', cursor: 'pointer' }}
+                                    onClick={handleNonStrikerRetiredHurt}
+                                  >
+                                    Retired Hurt
+                                  </button>
+                                )}
                               </span>
                               <span style={{ fontFamily: 'monospace' }}>{sc.nonStriker ? `${sc.nonStrikerRuns || 0} (${sc.nonStrikerBalls || 0})` : '-'}</span>
                             </div>
@@ -4342,12 +4742,23 @@ function App() {
                         </div>
 
                         {/* Bowler stats */}
-                        <div style={{ background: 'rgba(0,0,0,0.15)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
+                        <div style={{ background: 'var(--bg-dark)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
                           <div style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--accent-cricket)', fontWeight: 'bold', borderBottom: '1px solid var(--border-glow)', paddingBottom: '6px', marginBottom: '10px' }}>
                             Bowler Stats
                           </div>
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 'bold' }}>
-                            <span>🏃 Bowler: {sc.bowler || <span style={{ color: 'var(--accent-cricket)', fontStyle: 'italic' }}>Select Bowler</span>}</span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              🏃 Bowler: {sc.bowler || <span style={{ color: 'var(--accent-cricket)', fontStyle: 'italic' }}>Select Bowler</span>}
+                              {sc.bowler && (
+                                <button 
+                                  className="role-selector" 
+                                  style={{ padding: '2px 6px', fontSize: '9px', borderColor: 'var(--text-muted)', color: 'var(--text-muted)', textTransform: 'uppercase', cursor: 'pointer' }}
+                                  onClick={handleBowlerRetiredHurt}
+                                >
+                                  Retired Hurt
+                                </button>
+                              )}
+                            </span>
                             <span style={{ fontFamily: 'monospace' }}>
                               {sc.bowler ? `${Math.floor((sc.bowlerBalls || 0)/6)}.${(sc.bowlerBalls || 0)%6} - ${(sc.bowlerRuns || 0)}R - ${(sc.bowlerWickets || 0)}W` : '-'}
                             </span>
@@ -4400,28 +4811,43 @@ function App() {
 
                       {/* Select next bowler popup if bowler empty */}
                       {!sc.bowler && (
-                        <div style={{ background: 'rgba(139, 92, 246, 0.05)', border: '1px solid rgba(139, 92, 246, 0.2)', padding: '16px', borderRadius: '12px', marginBottom: '24px', textAlign: 'left' }}>
-                          <h4 style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--accent-others)', marginBottom: '8px' }}>Select Bowler for Next Over:</h4>
-                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                            {bowlingPlayersList
-                              .filter(p => p.name !== sc.lastBowler || bowlingPlayersList.length <= 1)
-                              .map(p => (
-                                <button 
-                                  key={p.name}
-                                  className="role-selector" 
-                                  style={{ padding: '6px 12px', cursor: 'pointer' }}
-                                  onClick={() => handleChooseNewBowler(p.name)}
-                                >
-                                  {p.name}
-                                </button>
-                              ))
-                            }
+                        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px' }}>
+                          <div style={{ background: 'var(--bg-card)', padding: '24px', borderRadius: '16px', border: '1px solid var(--border-glow)', width: '100%', maxWidth: '400px', boxShadow: '0 8px 32px rgba(0,0,0,0.2)' }}>
+                            <h4 style={{ fontSize: '18px', fontWeight: 'bold', color: 'var(--accent-others)', marginBottom: '16px', textAlign: 'center' }}>Select Bowler for Next Over</h4>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                              {bowlingPlayersList.map(p => {
+                                const isLastBowler = sc.lastBowler?.includes(p.name) && bowlingPlayersList.length > 1;
+                                return (
+                                  <button 
+                                    key={p.name}
+                                    className="role-selector" 
+                                    style={{ 
+                                      padding: '12px 16px', 
+                                      cursor: isLastBowler ? 'not-allowed' : 'pointer',
+                                      opacity: isLastBowler ? 0.5 : 1,
+                                      textDecoration: isLastBowler ? 'line-through' : 'none',
+                                      display: 'flex',
+                                      justifyContent: 'space-between',
+                                      alignItems: 'center',
+                                      background: isLastBowler ? 'var(--bg-dark)' : 'var(--bg-card-hover)',
+                                      color: isLastBowler ? 'var(--text-muted)' : 'var(--text-main)',
+                                      borderColor: 'var(--border-glow)'
+                                    }}
+                                    disabled={isLastBowler}
+                                    onClick={() => handleChooseNewBowler(p.name)}
+                                  >
+                                    <span>{p.name}</span>
+                                    {isLastBowler && <span style={{ fontSize: '11px', color: 'var(--accent-cricket)' }}>Just Bowled</span>}
+                                  </button>
+                                )
+                              })}
+                            </div>
                           </div>
                         </div>
                       )}
 
                       {/* BALL INPUT BUTTONS PANEL */}
-                      <div style={{ background: 'rgba(0,0,0,0.15)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
+                      <div style={{ background: 'var(--bg-dark)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
                         <div style={{ fontSize: '12px', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 'bold', marginBottom: '12px' }}>
                           Ball outcomes (Select outcome to record ball)
                         </div>
@@ -4436,18 +4862,9 @@ function App() {
                           <button className="btn-score-circle" disabled={!sc.striker || !sc.bowler} onClick={() => handleRecordBall('wide', 0)}>Wd</button>
                           <button className="btn-score-circle" disabled={!sc.striker || !sc.bowler} onClick={() => handleRecordBall('no_ball', 0)}>Nb</button>
                           <button className="btn-score-circle wicket" disabled={!sc.striker || !sc.bowler} onClick={() => handleRecordBall('wicket')}>Wicket</button>
-                          <button className="btn-score-circle" disabled={!sc.striker || !sc.bowler} onClick={() => {
-                            const extraRuns = parseInt(prompt("Enter runs ran on wide ball:", "1"), 10) || 1
-                            handleRecordBall('wide', extraRuns)
-                          }}>Wd + Runs</button>
-                          <button className="btn-score-circle" disabled={!sc.striker || !sc.bowler} onClick={() => {
-                            const extraRuns = parseInt(prompt("Enter runs ran on no ball:", "1"), 10) || 1
-                            handleRecordBall('no_ball', extraRuns)
-                          }}>Nb + Runs</button>
-                          <button className="btn-score-circle wicket" disabled={!sc.striker || !sc.bowler} onClick={() => {
-                            const runsRan = parseInt(prompt("Enter runs completed before run-out wicket:", "1"), 10) || 1
-                            handleRecordBall('runs_wicket', runsRan)
-                          }}>Runs + Wkt</button>
+                          <button className="btn-score-circle" disabled={!sc.striker || !sc.bowler} onClick={handleWideWithRuns}>Wd + Runs</button>
+                          <button className="btn-score-circle" disabled={!sc.striker || !sc.bowler} onClick={handleNoBallWithRuns}>Nb + Runs</button>
+                          <button className="btn-score-circle wicket" disabled={!sc.striker || !sc.bowler} onClick={handleRunsWithWicket}>Runs + Wkt</button>
                         </div>
                       </div>
 
@@ -4505,34 +4922,12 @@ function App() {
                         </div>
                       </div>
 
-                      {/* End of Over trigger */}
-                      {(() => {
-                        const legalCount = sc.ballsThisOver?.filter(b => {
-                          const label = typeof b === 'object' && b !== null ? b.label : b
-                          return !label.includes('Wd') && !label.includes('Nb')
-                        }).length || 0
-                        if (legalCount >= 6) {
-                          return (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(139, 92, 246, 0.1)', border: '1px solid var(--accent-others)', padding: '16px', borderRadius: '12px', marginTop: '24px' }}>
-                              <span style={{ fontSize: '13px', fontWeight: 'bold' }}>This over is complete! Reset bowler state to start the next over:</span>
-                              <button 
-                                className="btn-login" 
-                                style={{ borderColor: 'var(--accent-others)', color: 'var(--accent-others)', cursor: 'pointer' }}
-                                onClick={handleOverCompleteReset}
-                              >
-                                Prepare Next Over
-                              </button>
-                            </div>
-                          )
-                        }
-                        return null
-                      })()}
 
                       {/* Innings & Match Actions */}
                       <div style={{ marginTop: '32px', display: 'flex', gap: '12px', borderTop: '1px solid var(--border-glow)', paddingTop: '20px' }}>
                         <button 
                           className="btn-book-action" 
-                          style={{ flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border-glow)', color: '#fff' }}
+                          style={{ flex: 1, background: 'var(--bg-card-hover)', border: '1px solid var(--border-glow)', color: 'var(--text-main)' }}
                           onClick={() => setActiveScorecardBookingId(null)}
                         >
                           Save Match & Exit Scorecard
@@ -4546,6 +4941,92 @@ function App() {
                         </button>
                       </div>
 
+                      {/* Cricbuzz Style Scorecard */}
+                      <div style={{ marginTop: '40px', borderTop: '1px solid var(--border-glow)', paddingTop: '24px' }}>
+                        <h3 style={{ fontSize: '18px', fontWeight: 'bold', color: 'var(--text-main)', marginBottom: '16px' }}>Full Scorecard</h3>
+                        
+                        {/* Batting Table */}
+                        <div className="scorecard-table-wrapper" style={{ marginBottom: '24px' }}>
+                          <table className="scorecard-table">
+                            <thead>
+                              <tr>
+                                <th className="scorecard-th">Batter</th>
+                                <th className="scorecard-th"></th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>R</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>B</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>4s</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>6s</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>SR</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {battingPlayersList.map(p => {
+                                const stats = (sc.battingStats || {})[p.name];
+                                if (!stats && p.name !== sc.striker && p.name !== sc.nonStriker) return null;
+                                const s = stats || { runs: 0, balls: 0, fours: 0, sixes: 0, out: false };
+                                
+                                let dismissalText = s.out ? (s.dismissalInfo || 'Out') : 'Not Out';
+                                if (s.retired) dismissalText = 'Retired Hurt';
+                                if (p.name === sc.striker) dismissalText = 'Batting*';
+                                if (p.name === sc.nonStriker) dismissalText = 'Batting';
+
+                                const sr = s.balls > 0 ? ((s.runs / s.balls) * 100).toFixed(1) : '-';
+
+                                return (
+                                  <tr key={p.name}>
+                                    <td className="scorecard-td scorecard-player-name">{p.name} {p.name === sc.striker ? '*' : ''}</td>
+                                    <td className="scorecard-td scorecard-td-muted" style={{ fontSize: '12px' }}>{dismissalText}</td>
+                                    <td className="scorecard-td scorecard-td-bold" style={{ textAlign: 'right' }}>{s.runs}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.balls}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.fours || 0}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.sixes || 0}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{sr}</td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Bowling Table */}
+                        <div className="scorecard-table-wrapper">
+                          <table className="scorecard-table">
+                            <thead>
+                              <tr>
+                                <th className="scorecard-th">Bowler</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>O</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>M</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>R</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>W</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>ECON</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {bowlingPlayersList.map(p => {
+                                const stats = (sc.bowlingStats || {})[p.name];
+                                if (!stats && p.name !== sc.bowler && p.name !== sc.lastBowler) return null;
+                                const s = stats || { runs: 0, balls: 0, wickets: 0, maidens: 0 };
+                                
+                                const overs = `${Math.floor(s.balls / 6)}.${s.balls % 6}`;
+                                const econ = s.balls > 0 ? ((s.runs / s.balls) * 6).toFixed(1) : '-';
+
+                                return (
+                                  <tr key={p.name}>
+                                    <td className="scorecard-td scorecard-player-name">{p.name} {p.name === sc.bowler ? '*' : ''}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{overs}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.maidens || 0}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.runs}</td>
+                                    <td className="scorecard-td scorecard-td-bold" style={{ textAlign: 'right', color: 'var(--accent-cricket)' }}>{s.wickets}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{econ}</td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+
                     </div>
                   )
                 })()}
@@ -4557,6 +5038,112 @@ function App() {
           </div>
         )}
 
+      {/* ── Toast Containers ── */}
+      <div className="toast-container">
+        {toasts.map(toast => (
+          <div key={toast.id} className={`toast-item toast-${toast.type}`}>
+            <span style={{ fontSize: '16px' }}>
+              {toast.type === 'success' ? '✅' : toast.type === 'error' ? '❌' : 'ℹ️'}
+            </span>
+            <div>{toast.message}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Coin Flip Dialog Overlay ── */}
+      {tossCoinState.showModal && (
+        <div className="custom-modal-overlay" style={{ zIndex: 10000 }}>
+          <div className="custom-modal-card" style={{ textAlign: 'center', background: 'var(--bg-card)', padding: '40px', border: '1px solid var(--border-glow)' }}>
+            <h3 style={{ fontSize: '24px', fontWeight: 'bold', marginBottom: '30px', color: 'var(--text-main)' }}>
+              {tossCoinState.spinning ? 'Flipping the Coin...' : 'Toss Result'}
+            </h3>
+            
+            <div className="coin-container">
+              <div className={`coin ${tossCoinState.spinning ? 'spinning' : ''} ${!tossCoinState.spinning && tossCoinState.winner === 2 ? 'flip-tails' : 'flip-heads'}`}>
+                <div className="coin-face coin-front">A</div>
+                <div className="coin-face coin-back">B</div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '40px', minHeight: '60px' }}>
+              {tossCoinState.spinning ? (
+                <div style={{ color: 'var(--text-muted)' }}>Waiting for outcome...</div>
+              ) : (
+                <div style={{ animation: 'fadeIn 0.5s ease-out' }}>
+                  <div style={{ fontSize: '22px', color: tossCoinState.winner === 1 ? 'var(--accent-football)' : 'var(--accent-cricket)', fontWeight: '900' }}>
+                    Team {tossCoinState.winner === 1 ? 'A' : 'B'} won the Toss!
+                  </div>
+                  <div style={{ fontSize: '18px', color: 'var(--text-main)', marginTop: '8px' }}>
+                    They chose to <strong style={{ color: 'var(--accent-others)' }}>{tossCoinState.choice}</strong>
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            {!tossCoinState.spinning && (
+              <button 
+                className="btn-book-action" 
+                style={{ marginTop: '20px', width: '100%' }}
+                onClick={() => setTossCoinState(prev => ({ ...prev, showModal: false }))}
+              >
+                Continue
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Custom Modal Dialog Overlay ── */}
+      {customModal && (
+        <div className="custom-modal-overlay">
+          <form className="custom-modal-card" onSubmit={handleModalSubmit}>
+            <div className="custom-modal-title">{customModal.title}</div>
+            <div className="custom-modal-message">{customModal.message}</div>
+            
+            {customModal.type === 'prompt' && (
+              <input
+                type="text"
+                className="custom-modal-input"
+                value={modalInputValue}
+                onChange={e => setModalInputValue(e.target.value)}
+                placeholder={customModal.placeholder || 'Enter value...'}
+                autoFocus
+              />
+            )}
+
+            {customModal.type === 'select' && (
+              <select
+                className="custom-modal-select"
+                value={modalInputValue}
+                onChange={e => setModalInputValue(e.target.value)}
+                autoFocus
+              >
+                {customModal.options?.map(opt => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            )}
+
+            <div className="custom-modal-actions">
+              {(customModal.type === 'confirm' || customModal.type === 'prompt' || customModal.type === 'select') && (
+                <button
+                  type="button"
+                  className="custom-modal-btn custom-modal-btn-secondary"
+                  onClick={handleModalCancel}
+                >
+                  Cancel
+                </button>
+              )}
+              <button
+                type="submit"
+                className="custom-modal-btn custom-modal-btn-primary"
+              >
+                {customModal.type === 'confirm' ? 'Yes' : 'OK'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
       </main>
     </>
   )
