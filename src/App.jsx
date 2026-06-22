@@ -422,11 +422,18 @@ function App() {
   const [tossCoinState, setTossCoinState] = useState({ spinning: false, winner: null, choice: null, showModal: false })
   const [tossWinnerOverride, setTossWinnerOverride] = useState(1)
   const [tossChoiceOverride, setTossChoiceOverride] = useState('Batting')
-  const [matchOversInput, setMatchOversInput] = useState(6)
+  const [matchOversInput, setMatchOversInput] = useState('6') // string to allow free typing
   const [singleBattingInput, setSingleBattingInput] = useState(true)
   const [batsmanStriker, setBatsmanStriker] = useState('')
   const [batsmanNonStriker, setBatsmanNonStriker] = useState('')
   const [currentBowler, setCurrentBowler] = useState('')
+  // Team name + captain editing (toss screen)
+  const [teamANameInput, setTeamANameInput] = useState('')
+  const [teamBNameInput, setTeamBNameInput] = useState('')
+  const [captainA, setCaptainA] = useState('')
+  const [captainB, setCaptainB] = useState('')
+  // Upcoming matches expansion
+  const [showAllUpcoming, setShowAllUpcoming] = useState(false)
 
   // Simulated Time & Alert states
   const [simulatedHour, setSimulatedHour] = useState(new Date().getHours())
@@ -1375,6 +1382,7 @@ function App() {
     setCurrentUser(userProfile)
     setIsLoggedIn(true)
     setShowLoginModal(false)
+    setSelectedDateIndex(0)
   }
 
   const handleLogout = () => {
@@ -1395,8 +1403,16 @@ function App() {
     
     setTossWinnerOverride(1)
     setTossChoiceOverride('Batting')
-    setMatchOversInput(booking.scoreCard?.matchOvers || defaultOvers)
+    setMatchOversInput(String(booking.scoreCard?.matchOvers || defaultOvers))
     setSingleBattingInput(booking.scoreCard?.singleBattingAllowed !== false)
+
+    // Team names and captains — initialize from existing scorecard or booking defaults
+    const existingTeam1 = booking.scoreCard?.team1 || booking.teamName || 'Team A'
+    const existingTeam2 = booking.scoreCard?.team2 || 'Opponent'
+    setTeamANameInput(existingTeam1)
+    setTeamBNameInput(existingTeam2)
+    setCaptainA(booking.scoreCard?.captainA || tAPlayers[0]?.name || '')
+    setCaptainB(booking.scoreCard?.captainB || tBPlayers[0]?.name || '')
 
     if (booking.sportId === 'football') {
       if (!booking.scoreCard || booking.scoreCard.result === 'Match is scheduled') {
@@ -1449,7 +1465,7 @@ function App() {
                 style={{ color: viewingDashboard ? 'var(--accent-football)' : 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', fontWeight: 'bold' }}
                 onClick={() => { setViewingDashboard(true); setSelectedSport(null); }}
               >
-                <User size={16} /> My Dashboard
+                <User size={16} /> My Profile
               </span>
               <button className="btn-login" style={{ display: 'flex', alignItems: 'center', gap: '6px', borderColor: 'var(--accent-cricket)', color: 'var(--accent-cricket)' }} onClick={handleLogout}>
                 <LogOut size={14} /> Log Out
@@ -2062,71 +2078,85 @@ function App() {
                 )
               }
 
-              // ── PLAYER (default) ─────────────────────────────────────────
+              // ── PLAYER (default) ──────────────────────────────────────────────────
               return (
-                <div style={{ maxWidth: '900px', margin: '0 auto', padding: '0 24px' }}>
+                <div style={{ maxWidth: '900px', margin: '0 auto', padding: '0 16px' }}>
                   {/* Profile header */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', flexWrap: 'wrap', gap: '16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                      <div style={{ width: '60px', height: '60px', borderRadius: '50%', background: 'rgba(0,255,115,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', fontWeight: '900', color: 'var(--accent-football)', border: '2px solid rgba(0,255,115,0.3)', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px', flexWrap: 'wrap', gap: '12px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                      <div style={{ width: '54px', height: '54px', borderRadius: '50%', background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-others))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px', fontWeight: '900', color: '#fff', flexShrink: 0, boxShadow: '0 4px 14px rgba(29,78,137,0.25)' }}>
                         {currentUser.name.charAt(0)}
                       </div>
                       <div>
-                        <h1 style={{ fontSize: '24px', fontWeight: '900', fontFamily: 'var(--font-heading)', marginBottom: '2px' }}>{currentUser.name}</h1>
-                        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: '11px', color: 'var(--accent-football)', fontWeight: 'bold', textTransform: 'uppercase' }}>Player</span>
+                        <h1 style={{ fontSize: '20px', fontWeight: '900', fontFamily: 'var(--font-heading)', marginBottom: '2px' }}>{currentUser.name}</h1>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '10px', color: 'var(--accent-primary)', fontWeight: '800', textTransform: 'uppercase', background: 'var(--accent-light)', padding: '2px 8px', borderRadius: '10px' }}>Player</span>
                           <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{currentUser.email}</span>
                         </div>
                       </div>
                     </div>
-                    <button className="btn-book-action" style={{ padding: '10px 24px' }} onClick={() => { setViewingDashboard(false); setSelectedSport('cricket') }}>
-                      + Book a Turf
-                    </button>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button className="btn-profile-home" onClick={() => { setViewingDashboard(false); setSelectedSport(null) }}>
+                        ← Explore
+                      </button>
+                      <button className="btn-book-action" style={{ padding: '9px 20px', fontSize: '13px', whiteSpace: 'nowrap' }} onClick={() => { setViewingDashboard(false); setSelectedSport('cricket') }}>
+                        + Book Turf
+                      </button>
+                    </div>
                   </div>
 
                   {/* Stats bar */}
                   {currentUser.role === 'player' && (
-                    <div className="player-stats-grid" style={{ marginBottom: '32px' }}>
+                    <div className="player-stats-grid" style={{ marginBottom: '24px' }}>
                       {[
                         { label: 'Matches', value: currentUser.matches ?? myBookings.length, emoji: '🏆' },
                         { label: 'Runs', value: currentUser.runs ?? 0, emoji: '🏏' },
                         { label: 'Wickets', value: currentUser.wickets ?? 0, emoji: '🎯' },
                       ].map(s => (
-                        <div key={s.label} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-glow)', borderRadius: '14px', padding: '16px', textAlign: 'center' }}>
-                          <div style={{ fontSize: '20px', marginBottom: '4px' }}>{s.emoji}</div>
-                          <div style={{ fontSize: '28px', fontWeight: '900', color: 'var(--accent-football)', fontFamily: 'var(--font-heading)' }}>{s.value}</div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px', textTransform: 'uppercase' }}>{s.label}</div>
+                        <div key={s.label} style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', borderRadius: '12px', padding: '14px', textAlign: 'center', boxShadow: 'var(--shadow-sm)' }}>
+                          <div style={{ fontSize: '18px', marginBottom: '4px' }}>{s.emoji}</div>
+                          <div style={{ fontSize: '24px', fontWeight: '900', color: 'var(--accent-primary)', fontFamily: 'var(--font-heading)' }}>{s.value}</div>
+                          <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{s.label}</div>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  {/* Upcoming matches */}
+                  {/* Upcoming matches — compact scrollable list */}
                   {upcomingBookings.length > 0 && (
-                    <div style={{ marginBottom: '32px' }}>
-                      <h2 style={{ fontSize: '18px', fontWeight: '800', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ marginBottom: '24px' }}>
+                      <div className="profile-section-title">
                         📅 Upcoming Matches
-                      </h2>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        {upcomingBookings.map(b => {
+                        <span style={{ marginLeft: 'auto', fontSize: '11px', fontWeight: '400', color: 'var(--text-muted)' }}>{upcomingBookings.length} scheduled</span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
+                        {(showAllUpcoming ? upcomingBookings : upcomingBookings.slice(0, 3)).map(b => {
                           const dateText = dates[b.dateIndex] ? dates[b.dateIndex].formatted : 'Upcoming'
-                          const statusColor = b.status === 'pending_approval' ? 'orange' : 'var(--accent-football)'
-                          const statusLabel = b.status === 'pending_approval' ? 'Awaiting Approval' : b.status === 'booked_open' ? 'Open Match' : 'Confirmed'
+                          const statusColor = b.status === 'pending_approval' ? 'orange' : 'var(--accent-primary)'
+                          const statusLabel = b.status === 'pending_approval' ? 'Pending' : b.status === 'booked_open' ? 'Open' : 'Confirmed'
                           return (
-                            <div key={b.id} style={{ background: 'rgba(0,255,115,0.02)', border: '1px solid rgba(0,255,115,0.15)', borderRadius: '14px', padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                              <div>
-                                <div style={{ fontWeight: '800', fontSize: '15px' }}>{b.teamName}</div>
-                                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                                  {b.sportId === 'cricket' ? '🏏 Cricket' : '⚽ Football'} · Turf {b.turfId} · {dateText} @ {b.time} · {b.duration}h
+                            <div key={b.id} className="upcoming-match-row">
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                                <span style={{ fontSize: '18px', flexShrink: 0 }}>{b.sportId === 'cricket' ? '🏏' : '⚽'}</span>
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: '700', fontSize: '13px', color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.teamName}</div>
+                                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px' }}>{dateText} @ {b.time} · Turf {b.turfId}</div>
                                 </div>
-                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>{b.playerCount} players registered</div>
                               </div>
-                              <span style={{ padding: '4px 12px', borderRadius: '20px', fontSize: '10px', fontWeight: '800', background: `${statusColor}22`, color: statusColor, border: `1px solid ${statusColor}44`, whiteSpace: 'nowrap' }}>
+                              <span style={{ flexShrink: 0, padding: '3px 10px', borderRadius: '20px', fontSize: '10px', fontWeight: '800', background: statusColor === 'orange' ? 'rgba(255,165,0,0.12)' : 'var(--accent-light)', color: statusColor, border: `1px solid ${statusColor === 'orange' ? 'rgba(255,165,0,0.3)' : 'rgba(29,78,137,0.25)'}`, whiteSpace: 'nowrap' }}>
                                 {statusLabel}
                               </span>
                             </div>
                           )
                         })}
+                        {upcomingBookings.length > 3 && (
+                          <button
+                            style={{ background: 'transparent', border: 'none', color: 'var(--accent-primary)', fontSize: '12px', fontWeight: '700', cursor: 'pointer', padding: '4px', textAlign: 'left' }}
+                            onClick={() => setShowAllUpcoming(v => !v)}
+                          >
+                            {showAllUpcoming ? '− Show less' : `+ Show ${upcomingBookings.length - 3} more`}
+                          </button>
+                        )}
                       </div>
                     </div>
                   )}
@@ -2401,7 +2431,7 @@ function App() {
             {/* Live In-Progress Matches Section */}
             {inProgressMatches.length > 0 && (
               <section style={{ width: '100%', marginBottom: '40px', textAlign: 'left' }}>
-                <h3 style={{ fontSize: '13px', fontWeight: '800', color: 'orange', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '16px' }}>
+                <h3 style={{ fontSize: '13px', fontWeight: '800', color: '#c1440e', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '16px' }}>
                   ⚡ Live Matches In Progress
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -2411,11 +2441,11 @@ function App() {
                       ? `${b.scoreCard?.score1 || '0/0'} vs ${b.scoreCard?.score2 || '0/0'}`
                       : `${b.scoreCard?.score1 || 0} - ${b.scoreCard?.score2 || 0}`
                     return (
-                      <div key={b.id} style={{ background: 'rgba(255,165,0,0.03)', border: '1px solid rgba(255,165,0,0.25)', borderRadius: '16px', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                      <div key={b.id} style={{ background: 'rgba(193,68,14,0.04)', border: '1px solid rgba(193,68,14,0.2)', borderRadius: '16px', padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                         <div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span className="status-dot" style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: 'red', animation: 'pulse 1.5s infinite' }}></span>
-                            <span style={{ fontWeight: '800', fontSize: '16px' }}>{b.teamName} Live Match</span>
+                            <span className="status-dot" style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: '#c1440e', animation: 'pulse 1.5s infinite' }}></span>
+                            <span style={{ fontWeight: '800', fontSize: '16px', color: 'var(--text-main)' }}>{b.teamName} Live Match</span>
                           </div>
                           <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginTop: '4px' }}>
                             {isCricket ? '🏏 Cricket' : '⚽ Football'} · Turf {b.turfId} · Score: <strong style={{ color: 'var(--text-main)', fontFamily: 'monospace', fontSize: '15px' }}>{scoreText}</strong>
@@ -2428,7 +2458,7 @@ function App() {
                         </div>
                         <button 
                           className="btn-book-action" 
-                          style={{ width: 'auto', padding: '10px 24px', background: 'linear-gradient(135deg, orange 0%, #ff4747 100%)', color: '#000', fontSize: '13px' }}
+                          style={{ width: 'auto', padding: '10px 24px', background: '#c1440e', color: '#fff', fontSize: '13px' }}
                           onClick={() => handleOpenScorecard(b)}
                         >
                           ⚡ Track Records
@@ -2574,8 +2604,8 @@ function App() {
                     return (
                       <div style={{
                         marginBottom: '20px',
-                        background: 'linear-gradient(135deg, rgba(0,220,100,0.07) 0%, rgba(255,215,0,0.05) 100%)',
-                        border: '1px solid rgba(0,220,100,0.25)',
+                        background: 'rgba(29, 78, 137, 0.05)',
+                        border: '1px solid rgba(29, 78, 137, 0.2)',
                         borderRadius: '14px',
                         padding: '14px 16px',
                         display: 'flex',
@@ -2583,20 +2613,20 @@ function App() {
                         gap: '12px',
                         flexWrap: 'wrap'
                       }}>
-                        <span style={{ fontSize: '22px', flexShrink: 0 }}>🎉</span>
+                        <span style={{ fontSize: '22px', flexShrink: 0 }}>🏟️</span>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: '12px', fontWeight: '800', color: '#00dc64', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>
+                          <div style={{ fontSize: '12px', fontWeight: '800', color: '#1d4e89', textTransform: 'uppercase', letterSpacing: '0.8px', marginBottom: '4px' }}>
                             Your Booking{myBookingsToday.length > 1 ? 's' : ''} on This Turf
                           </div>
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                             {myBookingsToday.map(b => (
                               <span key={b.id} style={{
                                 fontSize: '11px',
-                                background: 'rgba(0,220,100,0.12)',
-                                border: '1px solid rgba(0,220,100,0.3)',
+                                background: 'rgba(29, 78, 137, 0.1)',
+                                border: '1px solid rgba(29, 78, 137, 0.3)',
                                 borderRadius: '20px',
                                 padding: '3px 10px',
-                                color: '#e8f5e8',
+                                color: '#1d4e89',
                                 fontWeight: '600',
                                 display: 'flex', alignItems: 'center', gap: '5px',
                                 cursor: 'pointer'
@@ -2609,8 +2639,8 @@ function App() {
                                 {b.time}
                                 {b.duration > 1 ? ` — ${b.duration}h` : ''}
                                 {b.status === 'pending_approval'
-                                  ? <span style={{ color: 'orange' }}> · Pending ⏳</span>
-                                  : <span style={{ color: '#00dc64' }}> · Confirmed ✓</span>}
+                                  ? <span style={{ color: '#b46414' }}> · Pending ⏳</span>
+                                  : <span style={{ color: '#1d4e89' }}> · Confirmed ✓</span>}
                               </span>
                             ))}
                           </div>
@@ -2656,30 +2686,29 @@ function App() {
                             }
 
                             let btnStyle = { 
-                              borderColor: isSelected ? 'var(--accent-football)' : '',
-                              backgroundColor: isSelected ? 'rgba(0, 255, 102, 0.08)' : '',
-                              opacity: isBooked ? (bookingItem?.openToJoin ? 0.85 : 0.35) : 1,
+                              borderColor: isSelected ? 'var(--accent-primary)' : '',
+                              backgroundColor: isSelected ? 'rgba(29, 78, 137, 0.08)' : '',
+                              opacity: isBooked ? (bookingItem?.openToJoin ? 1 : 0.45) : 1,
                               cursor: isBooked ? (bookingItem?.openToJoin ? 'pointer' : 'not-allowed') : 'pointer'
                             }
 
                             if (isBooked && bookingItem) {
-                              btnStyle.opacity = 0.95
                               btnStyle.position = 'relative'
                               btnStyle.overflow = 'hidden'
-                              btnStyle.color = 'var(--text-main)'
-                              btnStyle.textShadow = '0 1px 4px rgba(0,0,0,0.95)'
-                              btnStyle.backgroundSize = 'cover'
-                              btnStyle.backgroundPosition = 'center'
+                              btnStyle.textShadow = 'none'
 
                               if (bookingItem.sportId === 'cricket') {
-                                btnStyle.backgroundImage = `linear-gradient(rgba(5, 6, 8, 0.75), rgba(5, 6, 8, 0.75)), url(${cricketSlotBg})`
-                                btnStyle.borderColor = 'rgba(255, 71, 71, 0.4)'
+                                btnStyle.background = 'rgba(193, 68, 14, 0.07)'
+                                btnStyle.borderColor = 'rgba(193, 68, 14, 0.45)'
+                                btnStyle.color = 'var(--text-main)'
                               } else if (bookingItem.sportId === 'football') {
-                                btnStyle.backgroundImage = `linear-gradient(rgba(5, 6, 8, 0.75), rgba(5, 6, 8, 0.75)), url(${footballSlotBg})`
-                                btnStyle.borderColor = 'rgba(0, 255, 115, 0.4)'
+                                btnStyle.background = 'rgba(29, 78, 137, 0.07)'
+                                btnStyle.borderColor = 'rgba(29, 78, 137, 0.45)'
+                                btnStyle.color = 'var(--text-main)'
                               } else {
-                                btnStyle.backgroundImage = `linear-gradient(rgba(5, 6, 8, 0.8), rgba(5, 6, 8, 0.8)), url(${othersBg})`
-                                btnStyle.borderColor = 'rgba(139, 92, 246, 0.4)'
+                                btnStyle.background = 'rgba(90, 78, 142, 0.07)'
+                                btnStyle.borderColor = 'rgba(90, 78, 142, 0.45)'
+                                btnStyle.color = 'var(--text-main)'
                               }
                             }
 
@@ -2691,15 +2720,18 @@ function App() {
                                  p.name === currentUser.name || (p.email && currentUser.email && p.email === currentUser.email)
                                )))
 
-                            // ── Override: my booking gets special glow treatment ──
+                            // ── Override: my booking — navy highlight ──
                             if (isMyBooking) {
                               btnStyle.opacity = 1
                               btnStyle.cursor = 'pointer'
-                              btnStyle.border = '1.5px solid rgba(0,220,100,0.85)'
-                              btnStyle.boxShadow = '0 0 14px rgba(0,220,100,0.35), inset 0 0 20px rgba(0,220,100,0.06)'
+                              btnStyle.background = 'rgba(29, 78, 137, 0.1)'
+                              btnStyle.border = '2px solid rgba(29, 78, 137, 0.7)'
+                              btnStyle.boxShadow = '0 2px 10px rgba(29, 78, 137, 0.18)'
+                              btnStyle.color = 'var(--text-main)'
                               if (bookingItem.status === 'pending_approval') {
-                                btnStyle.border = '1.5px solid rgba(255,170,0,0.85)'
-                                btnStyle.boxShadow = '0 0 14px rgba(255,170,0,0.3), inset 0 0 20px rgba(255,170,0,0.06)'
+                                btnStyle.background = 'rgba(180, 100, 20, 0.08)'
+                                btnStyle.border = '2px solid rgba(180, 100, 20, 0.55)'
+                                btnStyle.boxShadow = '0 2px 10px rgba(180, 100, 20, 0.15)'
                               }
                             }
 
@@ -2720,13 +2752,13 @@ function App() {
                                     padding: '2px 6px',
                                     borderRadius: '4px',
                                     background: bookingItem.status === 'pending_approval'
-                                      ? 'rgba(255,170,0,0.2)'
-                                      : 'rgba(0,220,100,0.2)',
-                                    color: bookingItem.status === 'pending_approval' ? '#ffaa00' : '#00dc64',
+                                      ? 'rgba(180, 100, 20, 0.12)'
+                                      : 'rgba(29, 78, 137, 0.12)',
+                                    color: bookingItem.status === 'pending_approval' ? '#b46414' : '#1d4e89',
                                     letterSpacing: '0.3px',
                                     display: 'flex', alignItems: 'center', gap: '3px'
                                   }}>
-                                    {bookingItem.status === 'pending_approval' ? '⏳ Pending' : '🎉 Yours!'}
+                                    {bookingItem.status === 'pending_approval' ? '⏳ Pending' : '✓ Yours'}
                                   </span>
                                 ) : (
                                   <span className="slot-status-badge">{statusText}</span>
@@ -3209,19 +3241,25 @@ function App() {
           }
 
           const handleAcceptToss = () => {
-            const team1Name = booking.teamName || 'Team A'
-            const team2Name = 'Opponent Team'
+            const team1Name = teamANameInput || booking.teamName || 'Team A'
+            const team2Name = teamBNameInput || 'Opponent Team'
 
             const isT1Batting = (tossWinnerOverride === 1 && tossChoiceOverride === 'Batting') || 
                                 (tossWinnerOverride === 2 && tossChoiceOverride === 'Bowling')
 
+            // Default to 6 if invalid or empty
+            const parsedOvers = parseInt(matchOversInput, 10)
+            const validOvers = (isNaN(parsedOvers) || parsedOvers < 0) ? 0 : parsedOvers
+
             handleUpdateScorecard(booking.id, {
               team1: team1Name,
               team2: team2Name,
-              tossWinner: tossWinnerOverride === 1 ? 'Team A' : 'Team B',
+              captainA: captainA,
+              captainB: captainB,
+              tossWinner: tossWinnerOverride === 1 ? team1Name : team2Name,
               tossChoice: tossChoiceOverride,
               battingTeam: isT1Batting ? 1 : 2,
-              matchOvers: parseInt(matchOversInput, 10) || 6,
+              matchOvers: validOvers || 6,
               singleBattingAllowed: singleBattingInput,
               undoStack: []
             })
@@ -3363,7 +3401,7 @@ function App() {
             }
           }
 
-          const recordBallOnState = (baseSc, type, runs = 0, isEditMode = false, oldLabel = '', allOutConfirmed = false, dismissalInfo = '') => {
+          const recordBallOnState = (baseSc, type, runs = 0, isEditMode = false, oldLabel = '', allOutConfirmed = false, dismissalInfo = '', dismissedBatsman = '') => {
             const scorecard = baseSc
             let newScore1 = scorecard.score1
             let newScore2 = scorecard.score2
@@ -3478,16 +3516,23 @@ function App() {
             let nextStriker = tempStriker
             let nextNonStriker = tempNonStriker
 
+            let isStrikerOut = false
+            let isNonStrikerOut = false
+            if (type === 'wicket' || type === 'runs_wicket') {
+              const outName = dismissedBatsman || scorecard.striker
+              if (outName === scorecard.striker) isStrikerOut = true
+              if (outName === scorecard.nonStriker) isNonStrikerOut = true
+              
+              if (nextStriker === outName) nextStriker = ''
+              if (nextNonStriker === outName) nextNonStriker = ''
+            }
+
             // Swap ends if over completed
             const isOverComplete = isLegalBall && ballsInOver === 0
             if (isOverComplete) {
-              if (type === 'wicket' || type === 'runs_wicket') {
-                nextStriker = tempNonStriker
-                nextNonStriker = ''
-              } else {
-                nextStriker = tempNonStriker
-                nextNonStriker = tempStriker
-              }
+              const oldNextStriker = nextStriker
+              nextStriker = nextNonStriker
+              nextNonStriker = oldNextStriker
             }
 
             // Accumulate detailed batsman/bowler stats
@@ -3506,12 +3551,17 @@ function App() {
                 balls: currentS.balls + strikerBallsInc,
                 fours: newFours,
                 sixes: newSixes,
-                out: (type === 'wicket' || type === 'runs_wicket') ? true : currentS.out,
-                dismissalInfo: (type === 'wicket' || type === 'runs_wicket') ? dismissalInfo : currentS.dismissalInfo
+                out: isStrikerOut ? true : currentS.out,
+                dismissalInfo: isStrikerOut ? dismissalInfo : currentS.dismissalInfo
               }
             }
-            if (scorecard.nonStriker && !currentBattingStats[scorecard.nonStriker]) {
-              currentBattingStats[scorecard.nonStriker] = { runs: 0, balls: 0, fours: 0, sixes: 0, out: false }
+            if (scorecard.nonStriker) {
+              const currentNS = currentBattingStats[scorecard.nonStriker] || { runs: 0, balls: 0, fours: 0, sixes: 0, out: false }
+              currentBattingStats[scorecard.nonStriker] = {
+                ...currentNS,
+                out: isNonStrikerOut ? true : currentNS.out,
+                dismissalInfo: isNonStrikerOut ? dismissalInfo : currentNS.dismissalInfo
+              }
             }
 
             const currentBowlingStats = { ...(scorecard.bowlingStats || {}) }
@@ -3537,7 +3587,7 @@ function App() {
               overs1: currentInnings === 1 ? updatedOvers : scorecard.overs1,
               score2: currentInnings === 2 ? updatedScore : scorecard.score2,
               overs2: currentInnings === 2 ? updatedOvers : scorecard.overs2,
-              striker: (type === 'wicket' && !isOverComplete) ? '' : nextStriker,
+              striker: nextStriker,
               nonStriker: nextNonStriker,
               strikerRuns: nextStriker ? (currentBattingStats[nextStriker]?.runs || 0) : 0,
               strikerBalls: nextStriker ? (currentBattingStats[nextStriker]?.balls || 0) : 0,
@@ -3578,21 +3628,32 @@ function App() {
               }
             }
 
+            let dismissedBatsmanName = scorecard.striker
             let dismissalInfoStr = ''
             if (type === 'wicket' || type === 'runs_wicket') {
+              const batsmanOut = await showSelectPrompt(
+                "Who got out?",
+                [`1: Striker (${scorecard.striker})`, `2: Non-Striker (${scorecard.nonStriker})`],
+                `1: Striker (${scorecard.striker})`,
+                "Batsman Out"
+              )
+              if (!batsmanOut) return
+              dismissedBatsmanName = batsmanOut.startsWith("2") ? scorecard.nonStriker : scorecard.striker
+
               const dismissalType = await showSelectPrompt(
                 "How did the batsman get out?",
                 ['Catch', 'Bowled', 'Run Out', 'Stumped', 'LBW', 'Hit Wicket', 'Retired'],
                 'Catch',
                 "Dismissal Info"
               )
-              dismissalInfoStr = dismissalType || "Out"
+              if (!dismissalType) return
+              dismissalInfoStr = `${dismissedBatsmanName} out ${dismissalType}`
             }
 
             const scCopy = deepCopyScorecard(scorecard)
             const newUndoStack = [...(scorecard.undoStack || []), scCopy].slice(-15)
 
-            const nextScState = recordBallOnState(scorecard, type, runs, false, '', allOutConfirmed, dismissalInfoStr)
+            const nextScState = recordBallOnState(scorecard, type, runs, false, '', allOutConfirmed, dismissalInfoStr, dismissedBatsmanName)
             nextScState.undoStack = newUndoStack
 
             if (nextScState._allOutTriggered) {
@@ -4151,7 +4212,8 @@ function App() {
                                 syncSplit();
                               }
 
-                              showToast('Teams Split Successfully!', 'success');
+                              showToast('Teams Split Successfully! You can now drag and drop to tweak the teams.', 'success');
+                              setScorecardStep('splitter');
                             }}
                           >
                             ⚡ Auto-Split Teams
@@ -4374,6 +4436,55 @@ function App() {
                         </button>
                       </div>
 
+                      {/* Team Name and Captains Editing */}
+                      <div className="active-players-setup-grid" style={{ paddingBottom: '16px', borderBottom: '1px solid var(--border-glow)' }}>
+                        <div>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>
+                            Team A Name & Captain
+                          </label>
+                          <input 
+                            type="text" 
+                            className="login-input" 
+                            style={{ margin: 0, padding: '10px', height: '40px', borderRadius: '8px 8px 0 0', borderBottom: 'none' }}
+                            value={teamANameInput}
+                            onChange={(e) => setTeamANameInput(e.target.value)}
+                            placeholder="Team A"
+                          />
+                          <select 
+                            className="role-selector" 
+                            style={{ width: '100%', padding: '10px', height: '40px', borderRadius: '0 0 8px 8px' }}
+                            value={captainA}
+                            onChange={(e) => setCaptainA(e.target.value)}
+                          >
+                            <option value="">Select Captain...</option>
+                            {teamAPlayers.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>
+                            Team B Name & Captain
+                          </label>
+                          <input 
+                            type="text" 
+                            className="login-input" 
+                            style={{ margin: 0, padding: '10px', height: '40px', borderRadius: '8px 8px 0 0', borderBottom: 'none' }}
+                            value={teamBNameInput}
+                            onChange={(e) => setTeamBNameInput(e.target.value)}
+                            placeholder="Team B"
+                          />
+                          <select 
+                            className="role-selector" 
+                            style={{ width: '100%', padding: '10px', height: '40px', borderRadius: '0 0 8px 8px' }}
+                            value={captainB}
+                            onChange={(e) => setCaptainB(e.target.value)}
+                          >
+                            <option value="">Select Captain...</option>
+                            {teamBPlayers.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+                          </select>
+                        </div>
+                      </div>
+
                       <div className="active-players-setup-grid">
                         <div>
                           <label style={{ fontSize: '12px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>
@@ -4385,8 +4496,8 @@ function App() {
                             value={tossWinnerOverride}
                             onChange={(e) => setTossWinnerOverride(parseInt(e.target.value, 10))}
                           >
-                            <option value={1}>Team A ({booking.teamName || 'Team A'})</option>
-                            <option value={2}>Team B (Opponent Team)</option>
+                            <option value={1}>{teamANameInput || 'Team A'}</option>
+                            <option value={2}>{teamBNameInput || 'Team B'}</option>
                           </select>
                         </div>
 
@@ -4412,13 +4523,17 @@ function App() {
                             How many Overs match?
                           </label>
                           <input 
-                            type="number" 
-                            min="1"
-                            max="50"
+                            type="text" 
                             className="role-selector" 
                             style={{ width: '100%', padding: '10px', borderRadius: '8px' }}
                             value={matchOversInput}
-                            onChange={(e) => setMatchOversInput(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val === '' || /^\d+$/.test(val)) {
+                                setMatchOversInput(val);
+                              }
+                            }}
+                            placeholder="e.g. 6"
                           />
                         </div>
 
@@ -4557,6 +4672,49 @@ function App() {
                 {/* STEP 4: BALL-BY-BALL SCORING PANEL */}
                 {scorecardStep === 'scoring' && (() => {
                   const sc = booking.scoreCard
+
+                  if (sc.isCompleted) {
+                    return (
+                      <div style={{ background: 'var(--bg-dark)', padding: '40px 24px', borderRadius: '16px', border: '2px solid var(--accent-football)', textAlign: 'center', marginBottom: '24px', boxShadow: '0 8px 32px rgba(0, 255, 102, 0.1)' }}>
+                        <div style={{ fontSize: '56px', marginBottom: '16px' }}>🏆</div>
+                        <h2 style={{ fontSize: '32px', fontWeight: '900', color: 'var(--text-main)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '1px' }}>Match Concluded</h2>
+                        <div style={{ display: 'inline-block', background: 'rgba(0, 255, 102, 0.1)', padding: '8px 24px', borderRadius: '30px', border: '1px solid var(--accent-football)' }}>
+                          <h3 style={{ fontSize: '18px', color: 'var(--accent-football)', fontWeight: 'bold', margin: 0 }}>{sc.result}</h3>
+                        </div>
+                        
+                        {booking.sportId === 'football' ? (
+                           <div style={{ fontSize: '36px', fontWeight: '900', fontFamily: 'monospace', marginTop: '32px' }}>
+                             {sc.team1} <span style={{ color: 'var(--accent-football)' }}>{sc.score1}</span> - <span style={{ color: 'var(--accent-football)' }}>{sc.score2}</span> {sc.team2}
+                           </div>
+                        ) : (
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '16px', marginTop: '32px', alignItems: 'center' }}>
+                            <div style={{ background: 'rgba(255,255,255,0.02)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
+                              <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>{sc.team1}</div>
+                              <div style={{ fontSize: '32px', fontWeight: '900', color: 'var(--text-main)', fontFamily: 'monospace', marginTop: '8px' }}>{sc.score1}</div>
+                              <div style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 'bold', marginTop: '4px' }}>{sc.overs1} overs</div>
+                            </div>
+                            
+                            <div style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--text-muted)', fontStyle: 'italic' }}>VS</div>
+
+                            <div style={{ background: 'rgba(255,255,255,0.02)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
+                              <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>{sc.team2}</div>
+                              <div style={{ fontSize: '32px', fontWeight: '900', color: 'var(--text-main)', fontFamily: 'monospace', marginTop: '8px' }}>{sc.score2}</div>
+                              <div style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 'bold', marginTop: '4px' }}>{sc.overs2} overs</div>
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ marginTop: '40px' }}>
+                          <button 
+                            className="btn-book-action" 
+                            style={{ padding: '14px 40px', width: 'auto' }}
+                            onClick={() => setActiveScorecardBookingId(null)}
+                          >
+                            Return to Profile
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  }
 
                   if (booking.sportId === 'football') {
                     const score1 = sc.score1 || 0
