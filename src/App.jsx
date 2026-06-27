@@ -113,6 +113,10 @@ function App() {
   useEffect(() => {
     if (currentUser) {
       localStorage.setItem('sr_currentUser', JSON.stringify(currentUser))
+      if (currentUser.email === 'puneethgp18@gmail.com') {
+        setViewingDashboard(true)
+        setSelectedSport(null)
+      }
     } else {
       localStorage.removeItem('sr_currentUser')
     }
@@ -123,6 +127,7 @@ function App() {
   }, [viewingDashboard])
 
   const [expandedDayIndex, setExpandedDayIndex] = useState(null)
+  const [expandedProfileDates, setExpandedProfileDates] = useState({})
 
   // System Configuration (Floodlights peak timing set by Owner)
   const [floodlightStartHour, setFloodlightStartHour] = useState(19) // default 7 PM (19:00)
@@ -131,10 +136,18 @@ function App() {
   // Register Fields
   const [regName, setRegName] = useState('')
   const [regEmail, setRegEmail] = useState('')
+  const [regPassword, setRegPassword] = useState('')
   const [regRole, setRegRole] = useState('player')
   const [isExistingPlayerToggle, setIsExistingPlayerToggle] = useState(false)
   const [playerSearchQuery, setPlayerSearchQuery] = useState('')
   const [selectedShadowProfile, setSelectedShadowProfile] = useState(null)
+
+  // Login & Forgot Password Fields
+  const [loginEmail, setLoginEmail] = useState('rahul.strikers@gmail.com')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [isAuthLoading, setIsAuthLoading] = useState(false)
+  const [isAppLoading, setIsAppLoading] = useState(isSupabaseConfigured)
 
   // Default profiles seed data
   const defaultProfiles = [
@@ -434,6 +447,12 @@ function App() {
   const [captainB, setCaptainB] = useState('')
   // Upcoming matches expansion
   const [showAllUpcoming, setShowAllUpcoming] = useState(false)
+  // Inline wicket panel state: null when closed, or { dismissedBatsman, howOut, nextBatsman, pendingType, pendingRuns }
+  const [wicketPanel, setWicketPanel] = useState(null)
+  // Slot match history: list of completed scorecard snapshots for this booking session
+  const [slotMatchHistory, setSlotMatchHistory] = useState([])
+  // Play-again prompt state
+  const [showPlayAgainPrompt, setShowPlayAgainPrompt] = useState(false)
 
   // Simulated Time & Alert states
   const [simulatedHour, setSimulatedHour] = useState(new Date().getHours())
@@ -442,7 +461,18 @@ function App() {
   const [activePlayingNames, setActivePlayingNames] = useState([])
 
   // Dashboard tab state for Admin
-  const [adminDashTab, setAdminDashTab] = useState('profiles') // 'profiles' | 'bookings' | 'owners'
+  const [adminDashTab, setAdminDashTab] = useState('profiles') // 'profiles' | 'requests' | 'owners'
+  const [accessRequests, setAccessRequests] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('smash_access_requests') || '[]')
+    } catch (e) {
+      return []
+    }
+  })
+
+  useEffect(() => {
+    localStorage.setItem('smash_access_requests', JSON.stringify(accessRequests))
+  }, [accessRequests])
 
   // ── Toast notification system ──
   const [toasts, setToasts] = useState([])
@@ -507,11 +537,73 @@ function App() {
     }
   }
 
+  const ensureProfileExists = async (userId, fullName, email, role) => {
+    if (!isSupabaseConfigured || !userId) return
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)
+    if (!isUuid) return
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', userId)
+        .maybeSingle()
+
+      if (error) {
+        console.error('Error checking profile:', error)
+      }
+
+      if (!data) {
+        const resolvedRole = email === 'puneethgp18@gmail.com' ? 'admin' : (role || 'player')
+        const { error: insError } = await supabase
+          .from('profiles')
+          .insert({
+            id: userId,
+            full_name: fullName || 'Player',
+            email: email,
+            role: resolvedRole
+          })
+        if (insError) {
+          console.error('Failed to auto-create profile:', insError)
+        } else {
+          console.log('✅ Auto-created profile for user:', userId)
+          const newProfile = {
+            id: userId,
+            name: fullName || 'Player',
+            email: email,
+            role: resolvedRole,
+            runs: resolvedRole === 'player' ? 0 : null,
+            wickets: resolvedRole === 'player' ? 0 : null,
+            matches: resolvedRole === 'player' ? 0 : null,
+            isShadow: false
+          }
+          setProfiles(prev => {
+            if (prev.some(p => p.id === userId)) return prev
+            return [...prev, newProfile]
+          })
+        }
+      }
+    } catch (e) {
+      console.error('Unexpected error in ensureProfileExists:', e)
+    }
+  }
+
   // Fetch initial data from Supabase if configured
   useEffect(() => {
     if (!isSupabaseConfigured) return;
 
     const fetchInitialData = async () => {
+      // 1. Restore active Supabase session first (critical for page refresh persistence)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user && !isLoggedIn) {
+        const u = session.user
+        const uName = u.user_metadata?.full_name || u.email?.split('@')[0] || 'Player'
+        const uRole = u.email === 'puneethgp18@gmail.com' ? 'admin' : (u.user_metadata?.role || 'player')
+        await ensureProfileExists(u.id, uName, u.email, uRole)
+        setCurrentUser({ id: u.id, name: uName, email: u.email, role: uRole })
+        setIsLoggedIn(true)
+        console.log('✅ Session restored for:', u.email)
+      }
+
       try {
         // 1. Fetch Profiles
         const { data: dbProfiles, error: pError } = await supabase
@@ -536,6 +628,18 @@ function App() {
           })
         }
 
+        // 1.5. Fetch Role/Access Requests from Supabase (with fallback)
+        try {
+          const { data: dbReqs, error: rError } = await supabase
+            .from('role_requests')
+            .select('*')
+          if (!rError && dbReqs) {
+            setAccessRequests(dbReqs)
+          }
+        } catch (e) {
+          console.warn('role_requests table not accessible yet, using local state:', e)
+        }
+
         // 2. Fetch Bookings
         const { data: dbBookings, error: bError } = await supabase
           .from('bookings')
@@ -554,29 +658,56 @@ function App() {
               .maybeSingle()
 
             const matchPlayers = dbPlayers ? dbPlayers.map(p => ({
+              id: p.profile_id,
               name: p.profiles?.full_name || 'Guest Player',
               email: p.profiles?.email || null,
               isShadow: !p.profiles?.email,
               team: p.team_number
             })) : []
 
-            const scoreCard = dbScores ? {
-              team1: dbScores.team1_name,
-              team2: dbScores.team2_name,
-              score1: dbScores.team1_score?.toString() || '0/0',
-              score2: dbScores.team2_score?.toString() || '0/0',
-              result: dbScores.is_live ? 'Match in progress' : 'Completed',
-              isCompleted: !dbScores.is_live
-            } : null
+            let scoreCard = null;
+            if (dbScores) {
+              const baseSc = dbScores.ball_by_ball && Object.keys(dbScores.ball_by_ball).length > 0
+                ? dbScores.ball_by_ball
+                : {};
+              scoreCard = {
+                ...baseSc,
+                team1: dbScores.team1_name,
+                team2: dbScores.team2_name,
+                score1: dbScores.team1_score?.toString() || '0/0',
+                score2: dbScores.team2_score?.toString() || '0/0',
+                result: dbScores.is_live ? 'Match in progress' : 'Completed',
+                isCompleted: !dbScores.is_live
+              }
+            }
+
+            let bDateFormatted = 'Unknown Date'
+            let diffDays = 0
+            if (b.booking_date) {
+              const [y, m, d] = b.booking_date.split('-')
+              const bDate = new Date(y, m - 1, d)
+              bDateFormatted = bDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+              const today = new Date()
+              today.setHours(0, 0, 0, 0)
+              diffDays = Math.round((bDate - today) / (1000 * 60 * 60 * 24))
+            }
+
+            let hourStr = 'Unknown Time'
+            if (b.start_hour !== null && b.start_hour !== undefined) {
+              const ampm = b.start_hour >= 12 ? 'PM' : 'AM'
+              const hr12 = b.start_hour % 12 || 12
+              hourStr = `${hr12}:00 ${ampm}`
+            }
 
             return {
               id: b.id,
               sportId: b.turf_id === 1 ? 'cricket' : b.turf_id === 2 ? 'football' : 'others',
               turfId: b.turf_id,
-              dateIndex: 0,
-              time: `${b.start_hour > 12 ? b.start_hour - 12 : b.start_hour}:00 ${b.start_hour >= 12 ? 'PM' : 'AM'}`,
-              duration: b.duration,
-              status: b.status === 'approved' ? 'booked_private' : b.status,
+              dateIndex: diffDays,
+              dateFormatted: bDateFormatted,
+              time: hourStr,
+              duration: b.duration || 1,
+              status: b.status === 'approved' ? 'booked_private' : (b.status || 'pending_approval'),
               teamName: 'Strikers FC',
               playerCount: matchPlayers.length,
               ownerApproved: b.status === 'approved',
@@ -589,18 +720,73 @@ function App() {
             }
           }))
 
-          setBookings(prev => {
-            const existingIds = new Set(mappedBookings.map(x => x.id));
-            const uniqueOld = prev.filter(x => !existingIds.has(x.id));
-            return [...uniqueOld, ...mappedBookings];
-          })
+          setBookings(mappedBookings)
         }
       } catch (err) {
         console.error('Error fetching Supabase data:', err)
+      } finally {
+        setIsAppLoading(false)
       }
     }
 
     fetchInitialData()
+
+    // — Restore session after page refresh —
+    // Supabase stores the session in localStorage. We listen for auth changes
+    // and rebuild currentUser from the active session so bookings persist.
+    const { data: { subscription: authSub } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' && session?.user) {
+        const u = session.user
+        const uName = u.user_metadata?.full_name || u.email?.split('@')[0] || 'Player'
+        const uRole = u.email === 'puneethgp18@gmail.com' ? 'admin' : (u.user_metadata?.role || 'player')
+        await ensureProfileExists(u.id, uName, u.email, uRole)
+        setCurrentUser(prev => {
+          if (prev?.id === u.id) return prev
+          return { id: u.id, name: uName, email: u.email, role: uRole }
+        })
+        setIsLoggedIn(true)
+      } else if (event === 'SIGNED_OUT') {
+        setCurrentUser(null)
+        setIsLoggedIn(false)
+      }
+    })
+
+    const channel = supabase
+      .channel('public:match_scores')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'match_scores' },
+        (payload) => {
+          if (payload.new && payload.new.booking_id) {
+            const dbScores = payload.new;
+            const baseSc = dbScores.ball_by_ball && Object.keys(dbScores.ball_by_ball).length > 0
+              ? dbScores.ball_by_ball
+              : {};
+            const scoreCard = {
+              ...baseSc,
+              team1: dbScores.team1_name,
+              team2: dbScores.team2_name,
+              score1: dbScores.team1_score?.toString() || '0/0',
+              score2: dbScores.team2_score?.toString() || '0/0',
+              result: dbScores.is_live ? 'Match in progress' : 'Completed',
+              isCompleted: !dbScores.is_live
+            };
+
+            setBookings(prev => prev.map(b => {
+              if (b.id === dbScores.booking_id) {
+                return { ...b, scoreCard: scoreCard, matchStarted: true }
+              }
+              return b
+            }))
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      authSub.unsubscribe()
+      supabase.removeChannel(channel)
+    }
   }, [])
 
 
@@ -667,8 +853,20 @@ function App() {
 
   // Get all in-progress matches that the user has access to
   const inProgressMatches = useMemo(() => {
+    const currentHour = new Date().getHours()
+    
     return bookings.filter(b => {
       if (b.status === 'completed' || !b.matchStarted) return false
+      
+      // Only show matches for TODAY that fall within their scheduled time window
+      if (b.dateIndex !== 0) return false
+      
+      const bookingHour = parseInt(b.time.split(':')[0], 10)
+      if (isNaN(bookingHour)) return false
+      
+      const isWithinTimeWindow = currentHour >= bookingHour && currentHour < (bookingHour + b.duration)
+      if (!isWithinTimeWindow) return false
+
       if (currentUser?.role === 'owner' || currentUser?.role === 'admin') return true
       const isPart = b.captainName === currentUser?.name || 
                      (b.matchPlayers && b.matchPlayers.some(p => p.name === currentUser?.name || (currentUser?.email && p.email === currentUser?.email)))
@@ -847,7 +1045,7 @@ function App() {
     setSelectedBookedSlotId(null)
   }
 
-  const handleCreateBooking = () => {
+  const handleCreateBooking = async () => {
     if (!isLoggedIn) {
       showToast('You must sign in to reserve a turf!', 'error')
       setShowLoginModal(true)
@@ -924,46 +1122,70 @@ function App() {
       requestedAt: new Date().toISOString()
     }
 
-    if (isSupabaseConfigured) {
-      const syncBooking = async () => {
-        try {
-          const dateString = new Date().toISOString().split('T')[0]
-          const { data, error } = await supabase
-            .from('bookings')
-            .insert({
-              turf_id: selectedTurf,
-              booker_id: currentUser.id,
-              booking_date: dateString,
-              start_hour: startHour,
-              duration: selectedHours.length,
-              total_price: pricingData.total,
-              player_count: initialMatchPlayers.length,
-              open_to_join: isOpenToJoinToggle,
-              status: currentUser?.role === 'owner' ? 'approved' : 'pending_approval'
-            })
-            .select()
-            .single()
+    const isLocalUser = !currentUser || !currentUser.id || currentUser.id.startsWith('local_') || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentUser.id)
 
-          if (error) {
-            console.error('Failed to save booking to Supabase:', error)
-          } else if (data) {
-            newBooking.id = data.id
-            const rosterToInsert = []
-            if (currentUser && currentUser.id) {
-              rosterToInsert.push({
-                booking_id: data.id,
-                profile_id: currentUser.id
-              })
-            }
-            if (rosterToInsert.length > 0) {
-              await supabase.from('match_players').insert(rosterToInsert)
-            }
-          }
-        } catch (e) {
-          console.error(e)
+    if (isSupabaseConfigured && !isLocalUser) {
+      try {
+        // Ensure booker has a profile in public.profiles table to prevent foreign key errors
+        if (currentUser && currentUser.id) {
+          await ensureProfileExists(currentUser.id, currentUser.name, currentUser.email, currentUser.role)
         }
+
+        // Calculate correct booking_date string based on selectedDateIndex
+        const d = new Date()
+        d.setDate(d.getDate() + selectedDateIndex)
+        const year = d.getFullYear()
+        const month = String(d.getMonth() + 1).padStart(2, '0')
+        const dateVal = String(d.getDate()).padStart(2, '0')
+        const dateString = `${year}-${month}-${dateVal}`
+
+        const { data, error } = await supabase
+          .from('bookings')
+          .insert({
+            turf_id: selectedTurf,
+            booker_id: currentUser.id,
+            booking_date: dateString,
+            start_hour: startHour,
+            duration: selectedHours.length,
+            total_price: pricingData.total,
+            player_count: initialMatchPlayers.length,
+            open_to_join: isOpenToJoinToggle,
+            status: currentUser?.role === 'owner' ? 'approved' : 'pending_approval'
+          })
+          .select()
+          .single()
+
+        if (error) {
+          console.error('Failed to save booking to Supabase:', error)
+          // Show a specific message if it's an RLS / auth error
+          if (error.code === '42501' || error.message?.includes('row-level security')) {
+            showToast('⚠️ Booking saved locally only. To sync to server, please log out and log in again to refresh your session.', 'info')
+          } else {
+            showToast('⚠️ Booking saved locally. Supabase error: ' + error.message, 'info')
+          }
+          // DO NOT return — fall through to save to local state
+        } else if (data) {
+          newBooking.id = data.id
+          // Also set the correct dateString and dateIndex for the local state
+          newBooking.dateIndex = selectedDateIndex
+          newBooking.dateFormatted = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+          
+          const rosterToInsert = []
+          if (currentUser && currentUser.id) {
+            rosterToInsert.push({
+              booking_id: data.id,
+              profile_id: currentUser.id
+            })
+          }
+          if (rosterToInsert.length > 0) {
+            await supabase.from('match_players').insert(rosterToInsert)
+          }
+        }
+      } catch (e) {
+        console.error(e)
+        showToast('⚠️ Booking saved locally. Unexpected error connecting to Supabase.', 'info')
+        // DO NOT return — fall through to save to local state
       }
-      syncBooking()
     }
 
     setBookings(prev => [...prev, newBooking])
@@ -972,14 +1194,38 @@ function App() {
   }
 
   // Create Account with existing shadow profile tag strategy
-  const handleRegister = (e) => {
+  const handleRegister = async (e) => {
     e.preventDefault()
-    if (!regName || !regEmail) {
-      showToast('Please fill out all fields!', 'error')
+    if (!regName || !regEmail || !regPassword) {
+      showToast('Please fill out all fields including password!', 'error')
       return
     }
 
+    setIsAuthLoading(true)
     let newUser = {}
+    let authUserId = 'local_' + Date.now()
+
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase.auth.signUp({
+        email: regEmail,
+        password: regPassword,
+        options: {
+          data: {
+            full_name: regName,
+            role: regRole
+          }
+        }
+      })
+      if (error) {
+        showToast(error.message, 'error')
+        setIsAuthLoading(false)
+        return
+      }
+      showToast('Check your email to confirm registration! (Check spam if missing. Test emails are limited to 3/hr)', 'info')
+      if (data?.user) {
+        authUserId = data.user.id
+      }
+    }
 
     if (isExistingPlayerToggle && selectedShadowProfile) {
       // Import existing shadow profile and assign gmail
@@ -988,6 +1234,7 @@ function App() {
       
       updatedProfiles[shadowIndex] = {
         ...selectedShadowProfile,
+        id: authUserId, // use actual auth UUID if available
         email: regEmail,
         isShadow: false
       }
@@ -1011,30 +1258,128 @@ function App() {
       showAlert(`Claimed player profile! "${selectedShadowProfile.name}" is now linked to ${regEmail} with all past stats imported!`, 'Profile Claimed')
     } else {
       // Normal registration: use timestamp-based stable local ID
+      const resolvedRole = regEmail === 'puneethgp18@gmail.com' ? 'admin' : regRole
       newUser = {
-        id: 'local_' + Date.now(),
+        id: authUserId,
         name: regName,
         email: regEmail,
-        role: regRole,
-        runs: regRole === 'player' ? 0 : null,
-        wickets: regRole === 'player' ? 0 : null,
-        matches: regRole === 'player' ? 0 : null
+        role: resolvedRole,
+        runs: resolvedRole === 'player' ? 0 : null,
+        wickets: resolvedRole === 'player' ? 0 : null,
+        matches: resolvedRole === 'player' ? 0 : null
       }
       setProfiles(prev => [...prev, newUser])
-      showToast(`Account created successfully as ${regRole.toUpperCase()}!`, 'success')
+      showToast(`Account created successfully as ${resolvedRole.toUpperCase()}!`, 'success')
     }
 
     setCurrentUser(newUser)
     setIsLoggedIn(true)
     setShowLoginModal(false)
+    setIsAuthLoading(false)
 
     // Reset fields
     setRegName('')
     setRegEmail('')
+    setRegPassword('')
     setRegRole('player')
     setIsExistingPlayerToggle(false)
     setSelectedShadowProfile(null)
     setPlayerSearchQuery('')
+  }
+
+  const handleRealLogin = async (e) => {
+    if (e) e.preventDefault()
+    if (!loginEmail || !loginPassword) {
+      showToast('Please enter both email and password.', 'error')
+      return
+    }
+
+    setIsAuthLoading(true)
+
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: loginEmail,
+        password: loginPassword
+      })
+
+      if (error) {
+        showToast(error.message, 'error')
+        setIsAuthLoading(false)
+        return
+      }
+
+      if (data?.user) {
+        const uName = data.user.user_metadata?.full_name || 'Player'
+        const uRole = loginEmail === 'puneethgp18@gmail.com' ? 'admin' : (data.user.user_metadata?.role || 'player')
+        await ensureProfileExists(data.user.id, uName, loginEmail, uRole)
+
+        // Find matching profile by ID or email
+        let matchedProfile = profiles.find(p => p.id === data.user.id || p.email === loginEmail)
+        
+        if (matchedProfile) {
+          matchedProfile.id = data.user.id // ensure ID is UUID
+          matchedProfile.role = uRole
+          setCurrentUser(matchedProfile)
+          setIsLoggedIn(true)
+          setShowLoginModal(false)
+          setSelectedDateIndex(0)
+          showToast(`Welcome back, ${matchedProfile.name}!`, 'success')
+        } else {
+          // Edge case: Signed into Supabase but profile hasn't synced locally yet
+          setCurrentUser({
+            id: data.user.id,
+            name: data.user.user_metadata?.full_name || 'Player',
+            email: loginEmail,
+            role: uRole
+          })
+          setIsLoggedIn(true)
+          setShowLoginModal(false)
+          setSelectedDateIndex(0)
+        }
+      }
+    } else {
+      // Offline fallback
+      const matchedProfile = profiles.find(p => p.email === loginEmail && !p.isShadow)
+      if (matchedProfile) {
+        if (loginEmail === 'puneethgp18@gmail.com') {
+          matchedProfile.role = 'admin'
+        }
+        setCurrentUser(matchedProfile)
+        setIsLoggedIn(true)
+        setShowLoginModal(false)
+        setSelectedDateIndex(0)
+        showToast(`Welcome back, ${matchedProfile.name}! (Local Mode)`, 'success')
+      } else {
+        showToast('Invalid credentials or user not found in Local Mode.', 'error')
+      }
+    }
+
+    setIsAuthLoading(false)
+  }
+
+  const handleForgotPassword = async (e) => {
+    e.preventDefault()
+    if (!forgotEmail) {
+      showToast('Please enter your email address.', 'error')
+      return
+    }
+    
+    if (isSupabaseConfigured) {
+      setIsAuthLoading(true)
+      const { error } = await supabase.auth.resetPasswordForEmail(forgotEmail, {
+        redirectTo: window.location.origin
+      })
+      setIsAuthLoading(false)
+
+      if (error) {
+        showToast(error.message, 'error')
+      } else {
+        showAlert('Password reset link sent! Check your spam folder. Note: Test environments limit emails to 3 per hour.', 'Email Sent')
+        setAuthTab('login')
+      }
+    } else {
+      showToast('Password reset is only available when connected to Supabase.', 'error')
+    }
   }
 
   // Owner/Admin Creates Profiles
@@ -1070,6 +1415,139 @@ function App() {
       showAlert(`Profile Created!\nName: ${newShadowName}\nEmail: ${newShadowEmail}\nRole: ${roleToCreate.toUpperCase()}`, 'Profile Created')
     }
   }
+
+  // Request, approve, reject and update role request helpers for Security Admin
+  const handleRequestRoleUpgrade = async (requestedRole) => {
+    if (!currentUser || !isLoggedIn) {
+      showToast('Please log in first.', 'error')
+      return
+    }
+
+    const newRequest = {
+      id: 'req_' + Date.now(),
+      profile_id: currentUser.id,
+      user_name: currentUser.name,
+      user_email: currentUser.email,
+      requested_role: requestedRole,
+      status: 'pending',
+      created_at: new Date().toISOString()
+    }
+
+    setAccessRequests(prev => {
+      const filtered = prev.filter(r => r.profile_id !== currentUser.id)
+      return [...filtered, newRequest]
+    })
+
+    if (isSupabaseConfigured) {
+      try {
+        const { error } = await supabase
+          .from('role_requests')
+          .upsert({
+            profile_id: currentUser.id,
+            user_name: currentUser.name,
+            user_email: currentUser.email,
+            requested_role: requestedRole,
+            status: 'pending'
+          }, { onConflict: 'profile_id' })
+
+        if (error) {
+          console.error('Failed to sync request to Supabase:', error)
+          showToast('Request submitted locally! (Supabase sync failed: ' + error.message + ')', 'info')
+        } else {
+          showToast('Access upgrade request submitted to Super Admin!', 'success')
+        }
+      } catch (e) {
+        console.error(e)
+        showToast('Request submitted locally!', 'info')
+      }
+    } else {
+      showToast('Access upgrade request submitted locally (Offline Mode)!', 'success')
+    }
+  }
+
+  const handleApproveRoleRequest = async (reqId, profileId, requestedRole) => {
+    setAccessRequests(prev => prev.map(r => r.id === reqId || r.profile_id === profileId ? { ...r, status: 'approved' } : r))
+    setProfiles(prev => prev.map(p => p.id === profileId ? { ...p, role: requestedRole } : p))
+
+    if (currentUser && currentUser.id === profileId) {
+      setCurrentUser(prev => ({ ...prev, role: requestedRole }))
+    }
+
+    if (isSupabaseConfigured) {
+      try {
+        await supabase
+          .from('role_requests')
+          .update({ status: 'approved' })
+          .eq('profile_id', profileId)
+
+        const { error } = await supabase
+          .from('profiles')
+          .update({ role: requestedRole })
+          .eq('id', profileId)
+
+        if (error) {
+          console.error('Failed to update role in Supabase:', error)
+          showToast('Approved request locally. Run the SQL migration in Supabase for persistence.', 'warning')
+        } else {
+          showToast(`Request approved! User role upgraded to ${requestedRole.toUpperCase()}`, 'success')
+        }
+      } catch (e) {
+        console.error(e)
+        showToast('Approved request locally!', 'success')
+      }
+    } else {
+      showToast(`Request approved locally! User role upgraded to ${requestedRole.toUpperCase()}`, 'success')
+    }
+  }
+
+  const handleRejectRoleRequest = async (reqId, profileId) => {
+    setAccessRequests(prev => prev.map(r => r.id === reqId || r.profile_id === profileId ? { ...r, status: 'rejected' } : r))
+
+    if (isSupabaseConfigured) {
+      try {
+        await supabase
+          .from('role_requests')
+          .update({ status: 'rejected' })
+          .eq('profile_id', profileId)
+        showToast('Request rejected successfully.', 'info')
+      } catch (e) {
+        console.error(e)
+        showToast('Request rejected locally.', 'info')
+      }
+    } else {
+      showToast('Request rejected locally.', 'info')
+    }
+  }
+
+  const handleUpdateUserRole = async (profileId, newRole) => {
+    setProfiles(prev => prev.map(p => p.id === profileId ? { ...p, role: newRole } : p))
+
+    if (currentUser && currentUser.id === profileId) {
+      setCurrentUser(prev => ({ ...prev, role: newRole }))
+    }
+
+    if (isSupabaseConfigured) {
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ role: newRole })
+          .eq('id', profileId)
+
+        if (error) {
+          console.error('Failed to update role in Supabase:', error)
+          showToast('Role updated locally. Check RLS policies.', 'warning')
+        } else {
+          showToast(`User role updated to ${newRole.toUpperCase()} successfully!`, 'success')
+        }
+      } catch (e) {
+        console.error(e)
+        showToast('Role updated locally.', 'success')
+      }
+    } else {
+      showToast(`User role updated to ${newRole.toUpperCase()} locally!`, 'success')
+    }
+  }
+
 
   const handleCreateGroup = (e) => {
     e.preventDefault()
@@ -1301,6 +1779,36 @@ function App() {
       }
       return b
     }))
+
+    const isBookingUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(bookingId)
+    if (isSupabaseConfigured && isBookingUuid) {
+      const b = bookings.find(x => x.id === bookingId);
+      if (!b) return;
+      const newScorecardState = {
+        ...b.scoreCard,
+        ...updatedScorecard
+      };
+      const isLive = !newScorecardState.isCompleted;
+      const team1ScoreStr = newScorecardState.score1 || '0/0';
+      const team2ScoreStr = newScorecardState.score2 || '0/0';
+      const team1Runs = parseInt(team1ScoreStr.split('/')[0]) || 0;
+      const team2Runs = parseInt(team2ScoreStr.split('/')[0]) || 0;
+      const wickets = parseInt(team1ScoreStr.split('/')[1]) || 0;
+
+      supabase.from('match_scores').upsert({
+        booking_id: bookingId,
+        team1_name: newScorecardState.team1 || 'Team A',
+        team2_name: newScorecardState.team2 || 'Team B',
+        team1_score: team1Runs,
+        team2_score: team2Runs,
+        wickets: wickets,
+        is_live: isLive,
+        ball_by_ball: newScorecardState,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'booking_id' }).then(({ error }) => {
+        if (error) console.error('Failed to sync scorecard:', error);
+      });
+    }
   }
 
   const handleOwnerApproveBooking = (bookingId) => {
@@ -1352,6 +1860,7 @@ function App() {
         if (!signInError && signInData?.user) {
           // Sign-in succeeded — use the real Supabase UUID
           userProfile.id = signInData.user.id
+          await ensureProfileExists(signInData.user.id, mockProfile.name, mockProfile.email, mockProfile.role)
           console.log('✅ Signed in to Supabase as', mockProfile.email)
         } else {
           // Sign-in failed — try sign-up (first time setup)
@@ -1368,6 +1877,7 @@ function App() {
 
           if (!signUpError && signUpData?.user) {
             userProfile.id = signUpData.user.id
+            await ensureProfileExists(signUpData.user.id, mockProfile.name, mockProfile.email, mockProfile.role)
             console.log('✅ Signed up to Supabase as', mockProfile.email)
           } else {
             // Supabase completely unavailable — log and continue locally
@@ -1433,11 +1943,108 @@ function App() {
     }
   }
 
+  const renderAccountSettings = () => (
+    <div style={{ marginTop: '32px', marginBottom: '32px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <h2 style={{ fontSize: '18px', fontWeight: '800' }}>⚙️ Account Settings</h2>
+      </div>
+      <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-glow)', borderRadius: '14px', padding: '20px' }}>
+        <h3 style={{ fontSize: '15px', fontWeight: '700', marginBottom: '12px' }}>Update Password</h3>
+        <form onSubmit={async (e) => {
+          e.preventDefault()
+          const pwd = e.target.elements.newPassword.value
+          if (!pwd) return
+          if (isSupabaseConfigured) {
+            const { error } = await supabase.auth.updateUser({ password: pwd })
+            if (error) {
+              showToast(error.message, 'error')
+            } else {
+              showToast('Password updated successfully!', 'success')
+              e.target.reset()
+            }
+          } else {
+            showToast('Password updates are only available when connected to Supabase.', 'error')
+          }
+        }}>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <input type="password" name="newPassword" placeholder="Enter new password" className="login-input" required style={{ maxWidth: '300px', margin: 0 }} />
+            <button type="submit" className="btn-book-action" style={{ padding: '10px 20px' }}>Save Changes</button>
+          </div>
+        </form>
+        
+        {currentUser && currentUser.role !== 'admin' && (
+          <div style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px solid var(--border-glow)' }}>
+            <h3 style={{ fontSize: '15px', fontWeight: '700', marginBottom: '12px' }}>🔑 Access & Role Upgrades</h3>
+            {(() => {
+              const myRequest = accessRequests.find(r => r.profile_id === currentUser.id)
+              if (myRequest && myRequest.status === 'pending') {
+                return (
+                  <div style={{ background: 'rgba(255,165,0,0.08)', border: '1px solid rgba(255,165,0,0.25)', padding: '12px 16px', borderRadius: '8px', color: 'orange', fontSize: '13px' }}>
+                    ⏳ Your request to upgrade to <strong style={{ textTransform: 'uppercase' }}>{myRequest.requested_role}</strong> is pending review by the Super Admin.
+                  </div>
+                )
+              }
+              return (
+                <div>
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px' }}>
+                    Need to host tournaments, manage turf bookings, or configure slot timings? Request access to become a Venue Owner or Admin.
+                  </p>
+                  {myRequest && myRequest.status === 'rejected' && (
+                    <div style={{ background: 'rgba(255,71,71,0.08)', border: '1px solid rgba(255,71,71,0.25)', padding: '8px 12px', borderRadius: '8px', color: 'var(--accent-cricket)', fontSize: '12px', marginBottom: '10px' }}>
+                      ❌ Your previous request to become a {myRequest.requested_role.toUpperCase()} was rejected. You can submit a new request below.
+                    </div>
+                  )}
+                  <form onSubmit={(e) => {
+                    e.preventDefault()
+                    const reqRole = e.target.elements.requestedRoleUpgrade.value
+                    handleRequestRoleUpgrade(reqRole)
+                  }} style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <select name="requestedRoleUpgrade" className="role-selector" style={{ maxWidth: '200px', margin: 0, height: '44px' }}>
+                      <option value="owner">Venue Owner</option>
+                      <option value="admin">SupaAdmin (Security)</option>
+                    </select>
+                    <button type="submit" className="btn-book-action" style={{ padding: '10px 20px', height: '44px' }}>Request Upgrade</button>
+                  </form>
+                </div>
+              )
+            })()}
+          </div>
+        )}
+
+        <div style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px solid var(--border-glow)' }}>
+          <button className="btn-login" style={{ display: 'flex', alignItems: 'center', gap: '6px', borderColor: 'var(--accent-cricket)', color: 'var(--accent-cricket)' }} onClick={handleLogout}>
+            🚪 Sign Out
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
+  if (isAppLoading) {
+    return (
+      <div className="app-loader-container">
+        <div className="loader-ball"></div>
+        <div className="loader-shadow"></div>
+        <div className="loader-text">Loading Turf Booking...</div>
+      </div>
+    )
+  }
+
+  const isLocalSession = isLoggedIn && (
+    !currentUser || !currentUser.id || currentUser.id.startsWith('local_') || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentUser.id)
+  )
+
   return (
     <>
       {/* Navigation Header */}
       <nav className="navbar">
-        <a href="/" className="logo-container" onClick={(e) => { e.preventDefault(); setSelectedSport(null); setViewingDashboard(false); setScoringMatchId(null); }}>
+        <a href="/" className="logo-container" onClick={(e) => { 
+          e.preventDefault(); 
+          if (currentUser?.email === 'puneethgp18@gmail.com') return;
+          setSelectedSport(null); 
+          setViewingDashboard(false); 
+          setScoringMatchId(null); 
+        }}>
           <span className="logo-icon">SR</span>
           <span className="logo-text">SMASH <span>&</span> ROAST</span>
           
@@ -1448,25 +2055,37 @@ function App() {
             borderRadius: '20px',
             marginLeft: '8px',
             fontWeight: 'bold',
-            background: isSupabaseConfigured ? 'rgba(0, 255, 115, 0.1)' : 'rgba(255, 165, 0, 0.1)',
-            color: isSupabaseConfigured ? 'var(--accent-football)' : 'orange',
-            border: `1px solid ${isSupabaseConfigured ? 'rgba(0, 255, 115, 0.2)' : 'rgba(255, 165, 0, 0.2)'}`
+            background: isSupabaseConfigured
+              ? (isLocalSession ? 'rgba(255, 165, 0, 0.1)' : 'rgba(0, 255, 115, 0.1)')
+              : 'rgba(255, 165, 0, 0.1)',
+            color: isSupabaseConfigured
+              ? (isLocalSession ? 'orange' : 'var(--accent-football)')
+              : 'orange',
+            border: `1px solid ${isSupabaseConfigured
+              ? (isLocalSession ? 'rgba(255, 165, 0, 0.2)' : 'rgba(0, 255, 115, 0.2)')
+              : 'rgba(255, 165, 0, 0.2)'}`
           }}>
             <span className="status-dot">●</span>{' '}
-            <span className="status-text">{isSupabaseConfigured ? 'DB CONNECTED' : 'LOCAL SANDBOX'}</span>
+            <span className="status-text">
+              {isSupabaseConfigured
+                ? (isLocalSession ? 'DB CONNECTED (LOCAL)' : 'DB CONNECTED')
+                : 'LOCAL SANDBOX'}
+            </span>
           </span>
         </a>
         
         <div className="nav-actions">
           {isLoggedIn ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-              <span 
-                className="nav-link" 
-                style={{ color: viewingDashboard ? 'var(--accent-football)' : 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', fontWeight: 'bold' }}
-                onClick={() => { setViewingDashboard(true); setSelectedSport(null); }}
-              >
-                <User size={16} /> My Profile
-              </span>
+              {currentUser?.email !== 'puneethgp18@gmail.com' && (
+                <span 
+                  className="nav-link" 
+                  style={{ color: viewingDashboard ? 'var(--accent-football)' : 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '14px', fontWeight: 'bold' }}
+                  onClick={() => { setViewingDashboard(true); setSelectedSport(null); }}
+                >
+                  <User size={16} /> My Profile
+                </span>
+              )}
               <button className="btn-login" style={{ display: 'flex', alignItems: 'center', gap: '6px', borderColor: 'var(--accent-cricket)', color: 'var(--accent-cricket)' }} onClick={handleLogout}>
                 <LogOut size={14} /> Log Out
               </button>
@@ -1571,26 +2190,47 @@ function App() {
                 </button>
               </div>
 
-              {authTab === 'login' ? (
-                <div>
-                  <input type="email" placeholder="Email Address" className="login-input" defaultValue="rahul.strikers@gmail.com" />
-                  <input type="password" placeholder="Password" className="login-input" defaultValue="password123" />
+              {authTab === 'login' && (
+                <form onSubmit={handleRealLogin}>
+                  <input type="email" placeholder="Email Address" className="login-input" required value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} />
+                  <div style={{ position: 'relative' }}>
+                    <input type="password" placeholder="Password" className="login-input" required value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} />
+                    <button type="button" onClick={() => setAuthTab('forgot')} style={{ position: 'absolute', right: '12px', top: '14px', background: 'none', border: 'none', color: 'var(--accent-football)', fontSize: '12px', cursor: 'pointer', fontWeight: 'bold' }}>Forgot?</button>
+                  </div>
                   
-                  <button className="btn-book-action" style={{ width: '100%', marginBottom: '16px' }} onClick={() => handleDemoLogin('captain')}>
-                    Sign In
+                  <button type="submit" className="btn-book-action" style={{ width: '100%', marginBottom: '16px' }} disabled={isAuthLoading}>
+                    {isAuthLoading ? 'Signing In...' : 'Sign In'}
                   </button>
 
                   <div style={{ borderTop: '1px solid var(--border-glow)', paddingTop: '16px' }}>
                     <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'bold' }}>QUICK LOGINS FOR TESTING:</span>
                     <div className="quick-login-grid" style={{ marginTop: '12px' }}>
-                      <button className="role-selector" onClick={() => handleDemoLogin('captain')}>Player (Rahul)</button>
-                      <button className="role-selector" onClick={() => handleDemoLogin('guest')}>Guest (Vikram)</button>
-                      <button className="role-selector" onClick={() => handleDemoLogin('owner')}>Owner (Amit)</button>
-                      <button className="role-selector" onClick={() => handleDemoLogin('admin')}>puneethgp18@gmail.com (Admin)</button>
+                      <button type="button" className="role-selector" onClick={() => handleDemoLogin('captain')}>Player (Rahul)</button>
+                      <button type="button" className="role-selector" onClick={() => handleDemoLogin('guest')}>Guest (Vikram)</button>
+                      <button type="button" className="role-selector" onClick={() => handleDemoLogin('owner')}>Owner (Amit)</button>
+                      <button type="button" className="role-selector" onClick={() => handleDemoLogin('admin')}>Admin</button>
                     </div>
                   </div>
-                </div>
-              ) : (
+                </form>
+              )}
+
+              {authTab === 'forgot' && (
+                <form onSubmit={handleForgotPassword}>
+                  <h3 style={{ fontSize: '16px', marginBottom: '8px', color: 'var(--text-bright)' }}>Reset Password</h3>
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '16px' }}>Enter your email to receive a password reset link.</p>
+                  
+                  <input type="email" placeholder="Email Address" className="login-input" required value={forgotEmail} onChange={(e) => setForgotEmail(e.target.value)} />
+                  
+                  <button type="submit" className="btn-book-action" style={{ width: '100%', marginBottom: '16px' }} disabled={isAuthLoading}>
+                    {isAuthLoading ? 'Sending...' : 'Send Reset Link'}
+                  </button>
+                  <button type="button" className="btn-login" style={{ width: '100%', borderColor: 'transparent' }} onClick={() => setAuthTab('login')}>
+                    Back to Sign In
+                  </button>
+                </form>
+              )}
+
+              {authTab === 'register' && (
                 <form onSubmit={handleRegister}>
                   {/* Claim Profile Toggle */}
                   <div className="booking-toggle" style={{ marginBottom: '20px', background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '8px' }}>
@@ -1672,6 +2312,15 @@ function App() {
                     onChange={(e) => setRegEmail(e.target.value)} 
                   />
                   
+                  <input 
+                    type="password" 
+                    placeholder="Create Password" 
+                    className="login-input" 
+                    required 
+                    value={regPassword} 
+                    onChange={(e) => setRegPassword(e.target.value)} 
+                  />
+                  
                   {/* Register Role defaults to player only (Admins create owners) */}
                   <div style={{ display: 'none' }}>
                     <select value={regRole} onChange={(e) => setRegRole(e.target.value)}>
@@ -1679,8 +2328,8 @@ function App() {
                     </select>
                   </div>
 
-                  <button type="submit" className="btn-book-action" style={{ width: '100%', marginTop: '10px' }}>
-                    {isExistingPlayerToggle ? 'Claim Stats & Register' : 'Register Account'}
+                  <button type="submit" className="btn-book-action" style={{ width: '100%', marginTop: '10px' }} disabled={isAuthLoading}>
+                    {isAuthLoading ? 'Registering...' : (isExistingPlayerToggle ? 'Claim Stats & Register' : 'Register Account')}
                   </button>
                 </form>
               )}
@@ -1768,7 +2417,37 @@ function App() {
               const upcomingBookings = myBookings.filter(b => b.status !== 'completed' && b.dateIndex >= 0)
               const pastBookings = myBookings.filter(b => b.status === 'completed' || b.dateIndex < 0)
 
+              const groupAndSortBookings = (list, isPast) => {
+                const sorted = [...list].sort((a, b) => {
+                  if (a.dateIndex !== b.dateIndex) return isPast ? (b.dateIndex || 0) - (a.dateIndex || 0) : (a.dateIndex || 0) - (b.dateIndex || 0)
+                  const tA = a.time ? parseInt(a.time.split(':')[0]) || 0 : 0
+                  const tB = b.time ? parseInt(b.time.split(':')[0]) || 0 : 0
+                  if (tA !== tB) return tA - tB
+                  return (a.turfId || '').localeCompare(b.turfId || '')
+                })
+
+                const groups = {}
+                sorted.forEach(b => {
+                  let dt = b.dateFormatted || (b.dateIndex !== undefined && dates[b.dateIndex] ? dates[b.dateIndex].formatted : 'Past Match')
+                  if (b.dateIndex === 0) dt = '📅 Today'
+                  if (!groups[dt]) groups[dt] = []
+                  groups[dt].push(b)
+                })
+                return groups
+              }
+
+              const toggleProfileDate = (dateKey) => {
+                setExpandedProfileDates(prev => ({
+                  ...prev,
+                  [dateKey]: !prev[dateKey]
+                }))
+              }
+
+              const upcomingGroups = groupAndSortBookings(upcomingBookings, false)
+              const pastGroups = groupAndSortBookings(pastBookings, true)
+
               // ── SUPER ADMIN ─────────────────────────────────────────────
+              // ── SUPAADMIN SECURITY CONSOLE ────────────────────────────────
               if (role === 'admin') return (
                 <div style={{ maxWidth: '1100px', margin: '0 auto', padding: '0 24px' }}>
                   {/* Header */}
@@ -1776,18 +2455,24 @@ function App() {
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
                         <span style={{ fontSize: '28px' }}>🛡️</span>
-                        <h1 style={{ fontSize: '28px', fontWeight: '900', fontFamily: 'var(--font-heading)' }}>Super Admin Console</h1>
+                        <h1 style={{ fontSize: '28px', fontWeight: '900', fontFamily: 'var(--font-heading)' }}>SupaAdmin Security Console</h1>
                       </div>
-                      <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>Manage profiles, bookings, and venue owners</p>
+                      <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>Manage security roles, profile upgrades, and permissions</p>
                     </div>
-                    <button className="btn-login" onClick={() => { setViewingDashboard(false); setSelectedSport('cricket') }}>
-                      Book Turf
-                    </button>
+                    {currentUser?.email !== 'puneethgp18@gmail.com' && (
+                      <button className="btn-login" onClick={() => { setViewingDashboard(false); setSelectedSport('cricket') }}>
+                        Book Turf
+                      </button>
+                    )}
                   </div>
 
                   {/* Tab bar */}
                   <div style={{ display: 'flex', gap: '0', borderBottom: '1px solid var(--border-glow)', marginBottom: '28px' }}>
-                    {[['profiles', '👤 Profiles'], ['bookings', '📋 Bookings'], ['owners', '🏟️ Owners']].map(([tab, label]) => (
+                    {[
+                      ['profiles', '👤 Profiles & Roles'],
+                      ['requests', '🔑 Access Requests'],
+                      ['owners', '🏟️ Owners & Admins']
+                    ].map(([tab, label]) => (
                       <button
                         key={tab}
                         onClick={() => setAdminDashTab(tab)}
@@ -1798,11 +2483,17 @@ function App() {
                           borderBottom: adminDashTab === tab ? '2px solid var(--accent-others)' : '2px solid transparent',
                           marginBottom: '-1px', transition: 'all 0.2s', fontFamily: 'var(--font-body)'
                         }}
-                      >{label}</button>
+                      >
+                        {label} ({
+                          tab === 'profiles' ? profiles.length
+                          : tab === 'requests' ? accessRequests.filter(r => r.status === 'pending').length
+                          : profiles.filter(p => p.role === 'owner' || p.role === 'admin').length
+                        })
+                      </button>
                     ))}
                   </div>
 
-                  {/* PROFILES TAB */}
+                  {/* PROFILES & ROLES TAB */}
                   {adminDashTab === 'profiles' && (
                     <div>
                       {/* Create profile form */}
@@ -1814,6 +2505,7 @@ function App() {
                           <select className="role-selector" value={regRole} onChange={e => setRegRole(e.target.value)} style={{ height: '44px' }}>
                             <option value="player">Player</option>
                             <option value="owner">Owner</option>
+                            <option value="admin">Admin</option>
                           </select>
                           <button type="submit" className="btn-cart-book" style={{ padding: '10px 20px', height: '44px', whiteSpace: 'nowrap' }}>Create</button>
                         </form>
@@ -1824,7 +2516,7 @@ function App() {
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                           <thead>
                             <tr style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border-glow)' }}>
-                              {['Name', 'Email / Status', 'Role', 'Permissions'].map(h => (
+                              {['Name', 'Email / Status', 'Role (Editable)', 'Permissions'].map(h => (
                                 <th key={h} style={{ padding: '14px 16px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 'bold', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{h}</th>
                               ))}
                             </tr>
@@ -1833,9 +2525,10 @@ function App() {
                             {profiles.map(p => {
                               const isCurrent = p.email === currentUser.email
                               const roleColor = { admin: 'var(--accent-others)', owner: 'var(--accent-cricket)', player: 'var(--accent-football)' }[p.role] || 'var(--text-muted)'
-                              const permissions = p.role === 'admin' ? 'Full access · Manage owners & profiles'
+                              const permissions = p.role === 'admin' ? 'Full access · Manage security, roles, & requests'
                                 : p.role === 'owner' ? 'Approve bookings · Manage timings · Add players'
-                                : 'Book slots · Join matches · Create groups (max 2)'
+                                : 'Book slots · Join matches · Create groups'
+                              
                               return (
                                 <tr key={p.id} style={{ borderBottom: '1px solid var(--border-glow)', background: isCurrent ? 'rgba(139,92,246,0.04)' : 'transparent', transition: 'background 0.2s' }}>
                                   <td style={{ padding: '14px 16px', fontWeight: 'bold' }}>
@@ -1850,7 +2543,17 @@ function App() {
                                     {p.isShadow ? `Offline · Code: ${p.claimCode}` : p.email}
                                   </td>
                                   <td style={{ padding: '14px 16px' }}>
-                                    <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', background: `${roleColor}22`, color: roleColor, border: `1px solid ${roleColor}44` }}>{p.role}</span>
+                                    <select
+                                      value={p.role}
+                                      onChange={(e) => handleUpdateUserRole(p.id, e.target.value)}
+                                      disabled={isCurrent}
+                                      className="role-selector"
+                                      style={{ margin: 0, padding: '4px 8px', height: 'auto', fontSize: '12px', border: `1px solid ${roleColor}44`, background: `${roleColor}11`, color: roleColor, fontWeight: 'bold', borderRadius: '6px' }}
+                                    >
+                                      <option value="player">Player</option>
+                                      <option value="owner">Owner</option>
+                                      <option value="admin">SupaAdmin</option>
+                                    </select>
                                   </td>
                                   <td style={{ padding: '14px 16px', color: 'var(--text-muted)', fontSize: '12px' }}>{permissions}</td>
                                 </tr>
@@ -1862,14 +2565,14 @@ function App() {
                     </div>
                   )}
 
-                  {/* BOOKINGS TAB */}
-                  {adminDashTab === 'bookings' && (
+                  {/* ACCESS LEVEL REQUESTS TAB */}
+                  {adminDashTab === 'requests' && (
                     <div>
                       <div className="admin-stats-grid" style={{ marginBottom: '20px' }}>
                         {[
-                          { label: 'All Bookings', count: bookings.length, color: 'var(--text-muted)' },
-                          { label: 'Pending', count: bookings.filter(b => b.status === 'pending_approval').length, color: 'orange' },
-                          { label: 'Approved', count: bookings.filter(b => b.status === 'booked_private' || b.status === 'booked_open').length, color: 'var(--accent-football)' },
+                          { label: 'Pending Requests', count: accessRequests.filter(r => r.status === 'pending').length, color: 'orange' },
+                          { label: 'Approved Requests', count: accessRequests.filter(r => r.status === 'approved').length, color: 'var(--accent-football)' },
+                          { label: 'Rejected Requests', count: accessRequests.filter(r => r.status === 'rejected').length, color: 'var(--accent-cricket)' },
                         ].map(stat => (
                           <div key={stat.label} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-glow)', borderRadius: '12px', padding: '16px 24px', flex: 1, textAlign: 'center' }}>
                             <div style={{ fontSize: '28px', fontWeight: '900', color: stat.color }}>{stat.count}</div>
@@ -1877,48 +2580,81 @@ function App() {
                           </div>
                         ))}
                       </div>
+
                       <div className="admin-table-container" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-glow)', borderRadius: '16px' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                           <thead>
                             <tr style={{ background: 'rgba(255,255,255,0.02)', borderBottom: '1px solid var(--border-glow)' }}>
-                              {['Booker', 'Turf', 'Date & Time', 'Status', 'Requested At', 'Actions'].map(h => (
+                              {['User / Email', 'Current Role', 'Requested Role', 'Requested At', 'Status', 'Actions'].map(h => (
                                 <th key={h} style={{ padding: '14px 16px', textAlign: 'left', color: 'var(--text-muted)', fontWeight: 'bold', fontSize: '11px', textTransform: 'uppercase' }}>{h}</th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
-                            {[...bookings].sort((a, b) => new Date(b.requestedAt) - new Date(a.requestedAt)).map(b => {
-                              const statusColor = b.status === 'pending_approval' ? 'orange' : b.status === 'completed' ? 'var(--accent-football)' : '#00bfff'
-                              const dateText = b.dateFormatted || (dates[b.dateIndex] ? dates[b.dateIndex].formatted : '—')
+                            {accessRequests.map(r => {
+                              const currentProfile = profiles.find(p => p.id === r.profile_id)
+                              const currentRole = currentProfile ? currentProfile.role : 'player'
+                              const statusColor = r.status === 'pending' ? 'orange' : r.status === 'approved' ? 'var(--accent-football)' : 'var(--accent-cricket)'
+                              
                               return (
-                                <tr key={b.id} style={{ borderBottom: '1px solid var(--border-glow)' }}>
-                                  <td style={{ padding: '12px 16px', fontWeight: 'bold' }}>{b.captainName}</td>
-                                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>Turf {b.turfId}</td>
-                                  <td style={{ padding: '12px 16px' }}>{dateText} @ {b.time}</td>
+                                <tr key={r.id} style={{ borderBottom: '1px solid var(--border-glow)' }}>
+                                  <td style={{ padding: '12px 16px', fontWeight: 'bold' }}>
+                                    <div>{r.user_name}</div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'normal' }}>{r.user_email}</div>
+                                  </td>
+                                  <td style={{ padding: '12px 16px', textTransform: 'uppercase', fontSize: '11px', color: 'var(--text-muted)' }}>{currentRole}</td>
                                   <td style={{ padding: '12px 16px' }}>
-                                    <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '10px', fontWeight: '800', background: `${statusColor}22`, color: statusColor, border: `1px solid ${statusColor}44` }}>
-                                      {b.status === 'booked_private' ? 'Approved' : b.status === 'booked_open' ? 'Open' : b.status.replace('_', ' ')}
+                                    <span style={{ padding: '3px 8px', borderRadius: '4px', background: 'rgba(139,92,246,0.1)', color: 'var(--accent-others)', fontWeight: 'bold', textTransform: 'uppercase', fontSize: '10px' }}>
+                                      {r.requested_role}
                                     </span>
                                   </td>
-                                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: '11px' }}>{new Date(b.requestedAt).toLocaleString()}</td>
+                                  <td style={{ padding: '12px 16px', color: 'var(--text-muted)', fontSize: '11px' }}>
+                                    {new Date(r.created_at).toLocaleString()}
+                                  </td>
                                   <td style={{ padding: '12px 16px' }}>
-                                    {b.status === 'pending_approval' && (
+                                    <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '10px', fontWeight: '800', background: `${statusColor}22`, color: statusColor, border: `1px solid ${statusColor}44` }}>
+                                      {r.status.toUpperCase()}
+                                    </span>
+                                  </td>
+                                  <td style={{ padding: '12px 16px' }}>
+                                    {r.status === 'pending' && (
                                       <div style={{ display: 'flex', gap: '6px' }}>
-                                        <button className="btn-approve" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={() => handleOwnerApproveBooking(b.id)}>✓ Approve</button>
-                                        <button className="btn-reject" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={() => handleOwnerRejectBooking(b.id)}>✗ Reject</button>
+                                        <button 
+                                          type="button"
+                                          className="btn-approve" 
+                                          style={{ padding: '4px 10px', fontSize: '11px', cursor: 'pointer' }} 
+                                          onClick={() => handleApproveRoleRequest(r.id, r.profile_id, r.requested_role)}
+                                        >
+                                          ✓ Approve
+                                        </button>
+                                        <button 
+                                          type="button"
+                                          className="btn-reject" 
+                                          style={{ padding: '4px 10px', fontSize: '11px', cursor: 'pointer' }} 
+                                          onClick={() => handleRejectRoleRequest(r.id, r.profile_id)}
+                                        >
+                                          ✗ Reject
+                                        </button>
                                       </div>
                                     )}
                                   </td>
                                 </tr>
                               )
                             })}
+                            {accessRequests.length === 0 && (
+                              <tr>
+                                <td colSpan="6" style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                                  No access level requests submitted yet.
+                                </td>
+                              </tr>
+                            )}
                           </tbody>
                         </table>
                       </div>
                     </div>
                   )}
 
-                  {/* OWNERS TAB */}
+                  {/* OWNERS & ADMINS TAB */}
                   {adminDashTab === 'owners' && (
                     <div>
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
@@ -1937,17 +2673,18 @@ function App() {
                                 </div>
                               </div>
                               <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '10px', fontWeight: '800', textTransform: 'uppercase', background: isAdmin ? 'rgba(139,92,246,0.15)' : 'rgba(255,71,71,0.1)', color: isAdmin ? 'var(--accent-others)' : 'var(--accent-cricket)', border: `1px solid ${isAdmin ? 'rgba(139,92,246,0.3)' : 'rgba(255,71,71,0.2)'}` }}>
-                                {owner.role}
+                                {owner.role === 'admin' ? 'SupaAdmin' : 'Owner'}
                               </span>
                             </div>
                           )
                         })}
                         {profiles.filter(p => p.role === 'owner' || p.role === 'admin').length === 0 && (
-                          <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>No owners registered yet.</div>
+                          <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>No owners or admins registered yet.</div>
                         )}
                       </div>
                     </div>
                   )}
+                  {renderAccountSettings()}
                 </div>
               )
 
@@ -2074,6 +2811,8 @@ function App() {
                         </span>
                       </div>
                     </div>
+
+                    {renderAccountSettings()}
                   </div>
                 )
               }
@@ -2122,41 +2861,51 @@ function App() {
                     </div>
                   )}
 
-                  {/* Upcoming matches — compact scrollable list */}
-                  {upcomingBookings.length > 0 && (
+                  {/* Upcoming matches — grouped by date */}
+                  {Object.keys(upcomingGroups).length > 0 && (
                     <div style={{ marginBottom: '24px' }}>
                       <div className="profile-section-title">
                         📅 Upcoming Matches
                         <span style={{ marginLeft: 'auto', fontSize: '11px', fontWeight: '400', color: 'var(--text-muted)' }}>{upcomingBookings.length} scheduled</span>
                       </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px' }}>
-                        {(showAllUpcoming ? upcomingBookings : upcomingBookings.slice(0, 3)).map(b => {
-                          const dateText = dates[b.dateIndex] ? dates[b.dateIndex].formatted : 'Upcoming'
-                          const statusColor = b.status === 'pending_approval' ? 'orange' : 'var(--accent-primary)'
-                          const statusLabel = b.status === 'pending_approval' ? 'Pending' : b.status === 'booked_open' ? 'Open' : 'Confirmed'
-                          return (
-                            <div key={b.id} className="upcoming-match-row">
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-                                <span style={{ fontSize: '18px', flexShrink: 0 }}>{b.sportId === 'cricket' ? '🏏' : '⚽'}</span>
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: '700', fontSize: '13px', color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.teamName}</div>
-                                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px' }}>{dateText} @ {b.time} · Turf {b.turfId}</div>
-                                </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        {Object.entries(upcomingGroups).map(([dateKey, bookings]) => (
+                          <div key={dateKey} style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-glow)', borderRadius: '14px', overflow: 'hidden' }}>
+                            <div 
+                              style={{ padding: '12px 16px', background: 'rgba(255,255,255,0.03)', fontWeight: '800', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                              onClick={() => toggleProfileDate('upc_' + dateKey)}
+                            >
+                              <div>{dateKey}</div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{bookings.length} matches</span>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{expandedProfileDates['upc_' + dateKey] ? '▲' : '▼'}</span>
                               </div>
-                              <span style={{ flexShrink: 0, padding: '3px 10px', borderRadius: '20px', fontSize: '10px', fontWeight: '800', background: statusColor === 'orange' ? 'rgba(255,165,0,0.12)' : 'var(--accent-light)', color: statusColor, border: `1px solid ${statusColor === 'orange' ? 'rgba(255,165,0,0.3)' : 'rgba(29,78,137,0.25)'}`, whiteSpace: 'nowrap' }}>
-                                {statusLabel}
-                              </span>
                             </div>
-                          )
-                        })}
-                        {upcomingBookings.length > 3 && (
-                          <button
-                            style={{ background: 'transparent', border: 'none', color: 'var(--accent-primary)', fontSize: '12px', fontWeight: '700', cursor: 'pointer', padding: '4px', textAlign: 'left' }}
-                            onClick={() => setShowAllUpcoming(v => !v)}
-                          >
-                            {showAllUpcoming ? '− Show less' : `+ Show ${upcomingBookings.length - 3} more`}
-                          </button>
-                        )}
+                            
+                            {expandedProfileDates['upc_' + dateKey] && (
+                              <div style={{ padding: '8px 16px', display: 'flex', flexDirection: 'column', gap: '8px', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                                {bookings.map(b => {
+                                  const statusColor = b.status === 'pending_approval' ? 'orange' : 'var(--accent-primary)'
+                                  const statusLabel = b.status === 'pending_approval' ? 'Pending' : b.status === 'booked_open' ? 'Open' : 'Confirmed'
+                                  return (
+                                    <div key={b.id} className="upcoming-match-row" style={{ padding: '8px 0', border: 'none', borderBottom: '1px solid rgba(255,255,255,0.05)', borderRadius: 0, marginBottom: 0 }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+                                        <span style={{ fontSize: '18px', flexShrink: 0 }}>{b.sportId === 'cricket' ? '🏏' : '⚽'}</span>
+                                        <div style={{ minWidth: 0 }}>
+                                          <div style={{ fontWeight: '700', fontSize: '13px', color: 'var(--text-main)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.teamName}</div>
+                                          <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px' }}>{b.time} · Turf {b.turfId}</div>
+                                        </div>
+                                      </div>
+                                      <span style={{ flexShrink: 0, padding: '3px 10px', borderRadius: '20px', fontSize: '10px', fontWeight: '800', background: statusColor === 'orange' ? 'rgba(255,165,0,0.12)' : 'var(--accent-light)', color: statusColor, border: `1px solid ${statusColor === 'orange' ? 'rgba(255,165,0,0.3)' : 'rgba(29,78,137,0.25)'}`, whiteSpace: 'nowrap' }}>
+                                        {statusLabel}
+                                      </span>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -2167,21 +2916,35 @@ function App() {
                       🗓️ Match History
                     </h2>
 
-                    {myBookings.length === 0 ? (
+                    {pastBookings.length === 0 ? (
                       <div style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid var(--border-glow)', borderRadius: '16px', padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
                         <div style={{ fontSize: '40px', marginBottom: '12px' }}>🏟️</div>
-                        No matches yet. Book your first turf to get started!
+                        No match history yet. Book your first turf to get started!
                         <br />
                         <button className="btn-book-action" style={{ marginTop: '20px', padding: '10px 28px' }} onClick={() => { setViewingDashboard(false); setSelectedSport('cricket') }}>
                           Book Now
                         </button>
                       </div>
                     ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                        {myBookings.map(booking => {
-                          const isExpanded = expandedDayIndex === booking.id
-                          const dateText = booking.dateFormatted || (dates[booking.dateIndex] ? dates[booking.dateIndex].formatted : 'Upcoming')
-                          const isCricket = booking.sportId === 'cricket'
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        {Object.entries(pastGroups).map(([dateKey, bookings]) => (
+                          <div key={dateKey}>
+                            <div 
+                              style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', cursor: 'pointer' }}
+                              onClick={() => toggleProfileDate('past_' + dateKey)}
+                            >
+                              <h3 style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--accent-primary)', margin: 0 }}>{dateKey}</h3>
+                              <div style={{ flex: 1, height: '1px', background: 'var(--border-glow)' }}></div>
+                              <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{bookings.length} matches</span>
+                              <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{expandedProfileDates['past_' + dateKey] ? '▲' : '▼'}</span>
+                            </div>
+                            
+                            {expandedProfileDates['past_' + dateKey] && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                                {bookings.map(booking => {
+                                  const isExpanded = expandedDayIndex === booking.id
+                                  const dateText = booking.dateFormatted || (dates[booking.dateIndex] ? dates[booking.dateIndex].formatted : 'Upcoming')
+                                  const isCricket = booking.sportId === 'cricket'
                           const statusColor = booking.status === 'completed' ? 'var(--accent-football)'
                             : booking.status === 'pending_approval' ? 'orange'
                             : '#00bfff'
@@ -2347,6 +3110,10 @@ function App() {
                             </div>
                           )
                         })}
+                              </div>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -2417,6 +3184,8 @@ function App() {
                       </div>
                     )}
                   </div>
+
+                  {renderAccountSettings()}
                 </div>
               )
             })()}
@@ -3134,7 +3903,8 @@ function App() {
             // Mark match as started
             setBookings(prev => prev.map(b => b.id === booking.id ? { ...b, matchStarted: true } : b))
 
-            if (isSupabaseConfigured) {
+            const isBookingUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(booking.id)
+            if (isSupabaseConfigured && isBookingUuid) {
               const syncScorecardInit = async () => {
                 try {
                   await supabase
@@ -3202,11 +3972,8 @@ function App() {
               resultText = `Match tied ${score1} - ${score2}`
             }
 
-            showAlert(`Match ended!\n${resultText}`, 'Match Completed')
-            handleUpdateScorecard(booking.id, {
-              result: resultText,
-              isCompleted: true
-            })
+            const completedSc = { ...sc, result: resultText, isCompleted: true }
+            handleUpdateScorecard(booking.id, completedSc)
 
             // Also update status of booking to completed
             setBookings(prev => prev.map(b => {
@@ -3215,28 +3982,31 @@ function App() {
               }
               return b
             }))
-            setActiveScorecardBookingId(null)
+            setSlotMatchHistory(prev => [...prev, {
+              ...completedSc,
+              bookingId: booking.id,
+              teams: { a: team1Name, b: team2Name },
+              ts: new Date().toISOString()
+            }])
+            setShowPlayAgainPrompt(true)
           }
 
           const handleCoinFlip = () => {
-            setTossCoinState({ spinning: true, winner: null, choice: null, showModal: true })
+            const randWinner = Math.random() < 0.5 ? 1 : 2
+            // Only decide the winner — the decision (Bat/Bowl) is entered by the user below
+            setTossCoinState({ spinning: true, winner: randWinner, choice: null, showModal: true })
+            
             setTimeout(() => {
-              const randWinner = Math.random() < 0.5 ? 1 : 2
-              const choices = ['Batting', 'Bowling']
-              const randChoice = choices[Math.floor(Math.random() * choices.length)]
-              
-              setTossCoinState({
-                spinning: false,
-                winner: randWinner,
-                choice: randChoice,
-                showModal: true
-              })
+              setTossCoinState(prev => ({
+                ...prev,
+                spinning: false
+              }))
               setTossWinnerOverride(randWinner)
-              setTossChoiceOverride(randChoice)
+              // Do NOT auto-set tossChoiceOverride — user must enter their decision
 
               setTimeout(() => {
                 setTossCoinState(prev => ({ ...prev, showModal: false }))
-              }, 3000)
+              }, 3500)
             }, 2500)
           }
 
@@ -3303,7 +4073,8 @@ function App() {
             // Mark match as started
             setBookings(prev => prev.map(b => b.id === booking.id ? { ...b, matchStarted: true } : b))
 
-            if (isSupabaseConfigured) {
+            const isBookingUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(booking.id)
+            if (isSupabaseConfigured && isBookingUuid) {
               const syncScorecardInit = async () => {
                 try {
                   await supabase
@@ -3359,7 +4130,7 @@ function App() {
           const triggerDeclareInnings = (updatedSc) => {
             const scorecard = updatedSc
             if (scorecard.battingTeam === 1) {
-              showAlert('First innings ended! Swapping batting team.', 'Innings Over')
+              showAlert('First innings ended! Time to swap — the chasing team bats now.', 'Innings Over')
               handleUpdateScorecard(booking.id, {
                 ...updatedSc,
                 battingTeam: 2,
@@ -3382,22 +4153,28 @@ function App() {
             } else {
               const runs1 = parseInt(scorecard.score1.split('/')[0], 10) || 0
               const runs2 = parseInt(scorecard.score2.split('/')[0], 10) || 0
+              const wickets2 = parseInt(scorecard.score2.split('/')[1], 10) || 0
               let resultText = ''
               if (runs1 > runs2) {
-                resultText = `${scorecard.team1} won by ${runs1 - runs2} runs`
+                resultText = `${scorecard.team1} won by ${runs1 - runs2} run${runs1 - runs2 !== 1 ? 's' : ''}`
               } else if (runs2 > runs1) {
-                resultText = `${scorecard.team2} won by ${Math.max(0, 10 - (parseInt(scorecard.score2.split('/')[1], 10) || 0))} wickets`
+                // Chasing team won \u2014 wickets remaining
+                const wicketsRemaining = Math.max(0, battingPlayersList.length - wickets2)
+                resultText = `${scorecard.team2} won by ${wicketsRemaining} wicket${wicketsRemaining !== 1 ? 's' : ''}`
               } else {
-                resultText = 'Match tied!'
+                resultText = 'Match tied! \ud83e\udd1d'
               }
-              showAlert(`Match ended!\n${resultText}`, 'Match Completed')
-              handleUpdateScorecard(booking.id, {
-                ...updatedSc,
-                result: resultText,
-                isCompleted: true
-              })
+              const completedSc = { ...updatedSc, result: resultText, isCompleted: true }
+              handleUpdateScorecard(booking.id, completedSc)
               setBookings(prev => prev.map(b => b.id === booking.id ? { ...b, status: 'completed' } : b))
-              setActiveScorecardBookingId(null)
+              // Save to session history and prompt play-again (UI will handle from scorecard screen)
+              setSlotMatchHistory(prev => [...prev, {
+                ...completedSc,
+                bookingId: booking.id,
+                teams: { a: scorecard.team1, b: scorecard.team2 },
+                ts: new Date().toISOString()
+              }])
+              setShowPlayAgainPrompt(true)
             }
           }
 
@@ -3465,7 +4242,11 @@ function App() {
             // Handle All Out check
             let allOutTriggered = false
             if (type === 'wicket' || type === 'runs_wicket') {
-              const maxWickets = scorecard.singleBattingAllowed ? battingPlayersList.length : Math.max(1, battingPlayersList.length - 1)
+              // singleBattingAllowed=true: ALL players can bat alone, allout when ALL are dismissed
+              // singleBattingAllowed=false: last pair needed, allout at playerCount-1 wickets
+              const maxWickets = scorecard.singleBattingAllowed
+                ? battingPlayersList.length
+                : Math.max(1, battingPlayersList.length - 1)
               if (totalWickets >= maxWickets) {
                 if (allOutConfirmed) {
                   allOutTriggered = true
@@ -3603,6 +4384,14 @@ function App() {
               result: `In progress: ${currentInnings === 1 ? (scorecard.team1 || 'Team A') : (scorecard.team2 || 'Team B')} batting`
             }
 
+            // 2nd innings: check if chasing team has crossed the target
+            if (currentInnings === 2 && !allOutTriggered) {
+              const target1stInnings = parseInt((scorecard.score1 || '0/0').split('/')[0], 10) || 0
+              if (totalRuns > target1stInnings) {
+                resultState._chaseSuccessTriggered = true
+              }
+            }
+
             if (allOutTriggered) {
               resultState._allOutTriggered = true
             }
@@ -3613,48 +4402,51 @@ function App() {
             return resultState
           }
 
-          const handleRecordBall = async (type, runs = 0) => {
+          // handleRecordBall: for wickets, open the inline panel instead of sequential popups
+          const handleRecordBall = (type, runs = 0) => {
             const scorecard = booking.scoreCard
             if (!scorecard) return
 
-            let allOutConfirmed = false
             if (type === 'wicket' || type === 'runs_wicket') {
-              const runsWicketsStr = scorecard.battingTeam === 1 ? scorecard.score1 : scorecard.score2
-              const wicketsCount = parseInt(runsWicketsStr.split('/')[1], 10) || 0
-              
-              const maxWickets = scorecard.singleBattingAllowed ? battingPlayersList.length : Math.max(1, battingPlayersList.length - 1)
-              if (wicketsCount + 1 >= maxWickets) {
-                allOutConfirmed = await showConfirm("All wickets have fallen. Is the team indeed all out?", "Confirm All Out")
-              }
+              // Open the inline wicket panel; store the pending ball type/runs
+              setWicketPanel({
+                dismissedBatsman: 'Striker', // default
+                howOut: 'Catch',
+                nextBatsman: '',
+                pendingType: type,
+                pendingRuns: runs
+              })
+              return
             }
 
-            let dismissedBatsmanName = scorecard.striker
-            let dismissalInfoStr = ''
-            if (type === 'wicket' || type === 'runs_wicket') {
-              const batsmanOut = await showSelectPrompt(
-                "Who got out?",
-                [`1: Striker (${scorecard.striker})`, `2: Non-Striker (${scorecard.nonStriker})`],
-                `1: Striker (${scorecard.striker})`,
-                "Batsman Out"
-              )
-              if (!batsmanOut) return
-              dismissedBatsmanName = batsmanOut.startsWith("2") ? scorecard.nonStriker : scorecard.striker
+            // For non-wicket balls: record immediately
+            commitBall(type, runs, '', '', false)
+          }
 
-              const dismissalType = await showSelectPrompt(
-                "How did the batsman get out?",
-                ['Catch', 'Bowled', 'Run Out', 'Stumped', 'LBW', 'Hit Wicket', 'Retired'],
-                'Catch',
-                "Dismissal Info"
-              )
-              if (!dismissalType) return
-              dismissalInfoStr = `${dismissedBatsmanName} out ${dismissalType}`
-            }
+          // Commit a recorded ball (called after inline panel confirm or directly for non-wicket balls)
+          const commitBall = async (type, runs, dismissedBatsmanName, dismissalInfoStr, allOutConfirmed) => {
+            const scorecard = booking.scoreCard
+            if (!scorecard) return
 
             const scCopy = deepCopyScorecard(scorecard)
             const newUndoStack = [...(scorecard.undoStack || []), scCopy].slice(-15)
 
             const nextScState = recordBallOnState(scorecard, type, runs, false, '', allOutConfirmed, dismissalInfoStr, dismissedBatsmanName)
             nextScState.undoStack = newUndoStack
+
+            if (nextScState._chaseSuccessTriggered) {
+              delete nextScState._chaseSuccessTriggered
+              // Chasing team passed the target — they win
+              const wicketsLeft = Math.max(0, battingPlayersList.length - (parseInt((nextScState.score2 || '0/0').split('/')[1], 10) || 0))
+              const chaseWinnerName = scorecard.battingTeam === 2 ? nextScState.team2 : nextScState.team1
+              const resultText = `${chaseWinnerName} won by ${wicketsLeft} wicket${wicketsLeft !== 1 ? 's' : ''}`
+              handleUpdateScorecard(booking.id, { ...nextScState, result: resultText, isCompleted: true })
+              setBookings(prev => prev.map(b => b.id === booking.id ? { ...b, status: 'completed' } : b))
+              // Save to history and show play-again
+              setSlotMatchHistory(prev => [...prev, { ...nextScState, result: resultText, isCompleted: true, bookingId: booking.id, teams: { a: nextScState.team1, b: nextScState.team2 }, ts: new Date().toISOString() }])
+              setShowPlayAgainPrompt(true)
+              return
+            }
 
             if (nextScState._allOutTriggered) {
               delete nextScState._allOutTriggered
@@ -3690,12 +4482,40 @@ function App() {
             }
 
             if (type === 'wicket' || type === 'runs_wicket') {
-              if (!nextScState.striker) {
-                setBatsmanStriker('')
-              }
-              if (!nextScState.nonStriker) {
-                setBatsmanNonStriker('')
-              }
+              if (!nextScState.striker) setBatsmanStriker('')
+              if (!nextScState.nonStriker) setBatsmanNonStriker('')
+            }
+          }
+
+          // Confirm the inline wicket panel
+          const handleConfirmWicket = async () => {
+            if (!wicketPanel) return
+            const scorecard = booking.scoreCard
+            if (!scorecard) return
+
+            const { dismissedBatsman, howOut, nextBatsman, pendingType, pendingRuns } = wicketPanel
+
+            const dismissedBatsmanName = dismissedBatsman === 'NonStriker' ? scorecard.nonStriker : scorecard.striker
+            const dismissalInfoStr = `${dismissedBatsmanName} out ${howOut}`
+
+            // Check all-out threshold with confirmation
+            const runsWicketsStr = scorecard.battingTeam === 1 ? scorecard.score1 : scorecard.score2
+            const wicketsCount = parseInt(runsWicketsStr.split('/')[1], 10) || 0
+            const maxWickets = scorecard.singleBattingAllowed
+              ? battingPlayersList.length
+              : Math.max(1, battingPlayersList.length - 1)
+
+            let allOutConfirmed = false
+            if (wicketsCount + 1 >= maxWickets) {
+              allOutConfirmed = await showConfirm('All wickets have fallen. Is the team indeed all out?', 'Confirm All Out')
+            }
+
+            setWicketPanel(null)
+            await commitBall(pendingType, pendingRuns, dismissedBatsmanName, dismissalInfoStr, allOutConfirmed)
+
+            // If a next batsman was selected inline, set them as striker after state update
+            if (nextBatsman) {
+              handleChooseNewStriker(nextBatsman)
             }
           }
 
@@ -4178,7 +4998,8 @@ function App() {
 
                               setBookings(prev => prev.map(b => b.id === booking.id ? { ...b, matchPlayers: updatedMatchPlayers } : b));
 
-                              if (isSupabaseConfigured) {
+                              const isBookingUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(booking.id)
+                              if (isSupabaseConfigured && isBookingUuid) {
                                 const syncSplit = async () => {
                                   try {
                                     await supabase
@@ -4673,45 +5494,280 @@ function App() {
                 {scorecardStep === 'scoring' && (() => {
                   const sc = booking.scoreCard
 
-                  if (sc.isCompleted) {
-                    return (
-                      <div style={{ background: 'var(--bg-dark)', padding: '40px 24px', borderRadius: '16px', border: '2px solid var(--accent-football)', textAlign: 'center', marginBottom: '24px', boxShadow: '0 8px 32px rgba(0, 255, 102, 0.1)' }}>
-                        <div style={{ fontSize: '56px', marginBottom: '16px' }}>🏆</div>
-                        <h2 style={{ fontSize: '32px', fontWeight: '900', color: 'var(--text-main)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '1px' }}>Match Concluded</h2>
-                        <div style={{ display: 'inline-block', background: 'rgba(0, 255, 102, 0.1)', padding: '8px 24px', borderRadius: '30px', border: '1px solid var(--accent-football)' }}>
-                          <h3 style={{ fontSize: '18px', color: 'var(--accent-football)', fontWeight: 'bold', margin: 0 }}>{sc.result}</h3>
-                        </div>
-                        
-                        {booking.sportId === 'football' ? (
-                           <div style={{ fontSize: '36px', fontWeight: '900', fontFamily: 'monospace', marginTop: '32px' }}>
-                             {sc.team1} <span style={{ color: 'var(--accent-football)' }}>{sc.score1}</span> - <span style={{ color: 'var(--accent-football)' }}>{sc.score2}</span> {sc.team2}
-                           </div>
-                        ) : (
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '16px', marginTop: '32px', alignItems: 'center' }}>
-                            <div style={{ background: 'rgba(255,255,255,0.02)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
-                              <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>{sc.team1}</div>
-                              <div style={{ fontSize: '32px', fontWeight: '900', color: 'var(--text-main)', fontFamily: 'monospace', marginTop: '8px' }}>{sc.score1}</div>
-                              <div style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 'bold', marginTop: '4px' }}>{sc.overs1} overs</div>
-                            </div>
-                            
-                            <div style={{ fontSize: '14px', fontWeight: 'bold', color: 'var(--text-muted)', fontStyle: 'italic' }}>VS</div>
+                  if (sc.isCompleted || showPlayAgainPrompt) {
+                    // Parse booking end time
+                    const bookingStartHour = (() => {
+                      const timeStr = booking.time || ''
+                      const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i)
+                      if (!match) return -1
+                      let h = parseInt(match[1], 10)
+                      const ampm = match[3].toUpperCase()
+                      if (ampm === 'PM' && h !== 12) h += 12
+                      if (ampm === 'AM' && h === 12) h = 0
+                      return h
+                    })()
+                    const bookingEndHour = bookingStartHour + (booking.duration || 1)
+                    const nowHour = new Date().getHours()
+                    const nowMin = new Date().getMinutes()
+                    const bookingStillActive = bookingStartHour >= 0 && (nowHour < bookingEndHour || (nowHour === bookingEndHour && nowMin === 0))
 
-                            <div style={{ background: 'rgba(255,255,255,0.02)', padding: '20px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
-                              <div style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>{sc.team2}</div>
-                              <div style={{ fontSize: '32px', fontWeight: '900', color: 'var(--text-main)', fontFamily: 'monospace', marginTop: '8px' }}>{sc.score2}</div>
-                              <div style={{ fontSize: '14px', color: 'var(--text-muted)', fontWeight: 'bold', marginTop: '4px' }}>{sc.overs2} overs</div>
+                    // Helper to render a full scorecard table for a completed innings
+                    const renderCompletedScorecard = (battingPlayers, bowlingPlayers, battingStats, bowlingStats, scoreStr, oversStr, teamLabel) => (
+                      <div style={{ marginBottom: '24px' }}>
+                        <div style={{ fontSize: '13px', fontWeight: '800', color: 'var(--accent-football)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '10px', borderBottom: '1px solid var(--border-glow)', paddingBottom: '6px' }}>
+                          🏏 {teamLabel} — {scoreStr} ({oversStr} ov)
+                        </div>
+                        <div className="scorecard-table-wrapper" style={{ marginBottom: '12px' }}>
+                          <table className="scorecard-table">
+                            <thead>
+                              <tr>
+                                <th className="scorecard-th">Batter</th>
+                                <th className="scorecard-th"></th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>R</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>B</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>4s</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>6s</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>SR</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {battingPlayers.map(p => {
+                                const s = (battingStats || {})[p.name]
+                                if (!s) return null
+                                const dismissalText = s.out ? (s.dismissalInfo || 'Out') : s.retired ? 'Retired Hurt' : 'Not Out'
+                                const sr = s.balls > 0 ? ((s.runs / s.balls) * 100).toFixed(1) : '-'
+                                return (
+                                  <tr key={p.name}>
+                                    <td className="scorecard-td scorecard-player-name">{p.name}</td>
+                                    <td className="scorecard-td scorecard-td-muted" style={{ fontSize: '11px' }}>{dismissalText}</td>
+                                    <td className="scorecard-td scorecard-td-bold" style={{ textAlign: 'right' }}>{s.runs}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.balls}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.fours || 0}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.sixes || 0}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{sr}</td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="scorecard-table-wrapper">
+                          <table className="scorecard-table">
+                            <thead>
+                              <tr>
+                                <th className="scorecard-th">Bowler</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>O</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>M</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>R</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>W</th>
+                                <th className="scorecard-th" style={{ textAlign: 'right' }}>ECO</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {bowlingPlayers.map(p => {
+                                const s = (bowlingStats || {})[p.name]
+                                if (!s) return null
+                                const overs = `${Math.floor(s.balls / 6)}.${s.balls % 6}`
+                                const econ = s.balls > 0 ? ((s.runs / s.balls) * 6).toFixed(1) : '-'
+                                return (
+                                  <tr key={p.name}>
+                                    <td className="scorecard-td scorecard-player-name">{p.name}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{overs}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.maidens || 0}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{s.runs}</td>
+                                    <td className="scorecard-td scorecard-td-bold" style={{ textAlign: 'right', color: 'var(--accent-cricket)' }}>{s.wickets}</td>
+                                    <td className="scorecard-td" style={{ textAlign: 'right' }}>{econ}</td>
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )
+
+                    const isBat1Team1 = sc.battingTeam !== 1 // team1 batted first if battingTeam is now 2 (or completed)
+                    const team1BattedFirst = true // team1 always bats 1st innings (as per our setup)
+                    const team1BattingPlayers = teamAPlayers
+                    const team2BattingPlayers = teamBPlayers
+                    const team1BowlingPlayers = teamBPlayers
+                    const team2BowlingPlayers = teamAPlayers
+
+                    return (
+                      <div>
+                        {/* Trophy Header */}
+                        <div style={{ textAlign: 'center', padding: '32px 24px 24px', background: 'linear-gradient(135deg, rgba(0,255,102,0.05) 0%, rgba(193,68,14,0.05) 100%)', borderRadius: '16px', border: '1px solid var(--border-glow)', marginBottom: '24px' }}>
+                          <div style={{ fontSize: '52px', marginBottom: '12px' }}>🏆</div>
+                          <h2 style={{ fontSize: '28px', fontWeight: '900', color: 'var(--text-main)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '1px' }}>Match Concluded</h2>
+                          <div style={{ display: 'inline-block', background: 'rgba(0, 255, 102, 0.08)', padding: '10px 28px', borderRadius: '30px', border: '1px solid var(--accent-football)' }}>
+                            <span style={{ fontSize: '17px', color: 'var(--accent-football)', fontWeight: 'bold' }}>{sc.result}</span>
+                          </div>
+                          {/* Score Summary Row */}
+                          {booking.sportId !== 'football' ? (
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: '16px', marginTop: '24px', alignItems: 'center' }}>
+                              <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>{sc.team1}</div>
+                                <div style={{ fontSize: '28px', fontWeight: '900', color: 'var(--text-main)', fontFamily: 'monospace', marginTop: '6px' }}>{sc.score1}</div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>{sc.overs1} overs</div>
+                              </div>
+                              <div style={{ fontSize: '13px', fontWeight: 'bold', color: 'var(--text-muted)', fontStyle: 'italic' }}>VS</div>
+                              <div style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-glow)' }}>
+                                <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px' }}>{sc.team2}</div>
+                                <div style={{ fontSize: '28px', fontWeight: '900', color: 'var(--text-main)', fontFamily: 'monospace', marginTop: '6px' }}>{sc.score2}</div>
+                                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>{sc.overs2} overs</div>
+                              </div>
                             </div>
+                          ) : (
+                            <div style={{ fontSize: '36px', fontWeight: '900', fontFamily: 'monospace', marginTop: '20px' }}>
+                              {sc.team1} <span style={{ color: 'var(--accent-football)' }}>{sc.score1}</span> - <span style={{ color: 'var(--accent-football)' }}>{sc.score2}</span> {sc.team2}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Full Scorecard (cricket only) */}
+                        {booking.sportId !== 'football' && (
+                          <div style={{ marginBottom: '24px' }}>
+                            <h3 style={{ fontSize: '16px', fontWeight: '800', color: 'var(--text-main)', marginBottom: '16px' }}>📋 Full Match Scorecard</h3>
+                            {renderCompletedScorecard(team1BattingPlayers, team1BowlingPlayers, sc.battingStats, sc.bowlingStats, sc.score1, sc.overs1, sc.team1 + ' (1st Innings)')}
+                            {sc.score2 && sc.score2 !== '0/0' && renderCompletedScorecard(team2BattingPlayers, team2BowlingPlayers, sc.battingStats, sc.bowlingStats, sc.score2, sc.overs2, sc.team2 + ' (2nd Innings)')}
                           </div>
                         )}
-                        <div style={{ marginTop: '40px' }}>
-                          <button 
-                            className="btn-book-action" 
-                            style={{ padding: '14px 40px', width: 'auto' }}
+
+                        {/* Football goal timeline */}
+                        {booking.sportId === 'football' && sc.goals && sc.goals.length > 0 && (
+                          <div style={{ background: 'var(--bg-dark)', padding: '16px', borderRadius: '12px', border: '1px solid var(--border-glow)', marginBottom: '24px' }}>
+                            <div style={{ fontSize: '12px', color: 'var(--accent-football)', fontWeight: 'bold', marginBottom: '8px', textTransform: 'uppercase' }}>Goal Timeline</div>
+                            {sc.goals.map((g, i) => (
+                              <div key={i} style={{ fontSize: '13px', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                                ⚽ <strong>{g.player}</strong> <span style={{ color: 'var(--text-muted)' }}>({g.team === 1 ? sc.team1 : sc.team2}) — {g.minute}'</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Play Another Game? */}
+                        {bookingStillActive ? (
+                          <div style={{ background: 'rgba(0,255,102,0.04)', border: '1px solid rgba(0,255,102,0.25)', borderRadius: '16px', padding: '24px', textAlign: 'center', marginBottom: '16px' }}>
+                            <div style={{ fontSize: '22px', marginBottom: '8px' }}>⏱️</div>
+                            <div style={{ fontSize: '16px', fontWeight: '800', color: 'var(--text-main)', marginBottom: '4px' }}>You still have time left!</div>
+                            <div style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>Wanna play another game?</div>
+                            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+                              <button
+                                className="btn-book-action"
+                                style={{ padding: '12px 32px', width: 'auto', background: 'linear-gradient(135deg, var(--accent-football) 0%, #00bfff 100%)', color: '#000', fontWeight: '900' }}
+                                onClick={() => {
+                                  // Reset scorecard for a fresh match keeping same teams
+                                  const freshSc = {
+                                    team1: sc.team1, team2: sc.team2,
+                                    captainA: sc.captainA, captainB: sc.captainB,
+                                    score1: '0/0', overs1: '0.0',
+                                    score2: '0/0', overs2: '0.0',
+                                    battingTeam: 1,
+                                    matchOvers: sc.matchOvers,
+                                    singleBattingAllowed: sc.singleBattingAllowed,
+                                    striker: '', nonStriker: '', bowler: '',
+                                    strikerRuns: 0, strikerBalls: 0,
+                                    nonStrikerRuns: 0, nonStrikerBalls: 0,
+                                    bowlerRuns: 0, bowlerBalls: 0, bowlerWickets: 0,
+                                    ballsThisOver: [], battingStats: {}, bowlingStats: {},
+                                    extras: { wides: 0, noBalls: 0 }, undoStack: [],
+                                    result: 'Match is scheduled', isCompleted: false,
+                                    tossWinner: '', tossChoice: ''
+                                  }
+                                  handleUpdateScorecard(booking.id, freshSc)
+                                  setBookings(prev => prev.map(b => b.id === booking.id ? { ...b, status: 'booked_private', matchStarted: true } : b))
+                                  setBatsmanStriker('')
+                                  setBatsmanNonStriker('')
+                                  setCurrentBowler('')
+                                  setWicketPanel(null)
+                                  setShowPlayAgainPrompt(false)
+                                  setScorecardStep('toss')
+                                }}
+                              >
+                                ✅ Yes, Play Another!
+                              </button>
+                              <button
+                                className="btn-book-action"
+                                style={{ padding: '12px 32px', width: 'auto', background: 'var(--bg-card-hover)', border: '1px solid var(--border-glow)', color: 'var(--text-main)' }}
+                                onClick={() => {
+                                  setShowPlayAgainPrompt(false)
+                                  setScorecardStep('slot_history')
+                                }}
+                              >
+                                No, Wrap Up
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px', marginBottom: '16px', padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '10px', border: '1px solid var(--border-glow)' }}>
+                            ⏰ Booking time has ended — no more games for this slot.
+                          </div>
+                        )}
+
+                        <button
+                          className="btn-book-action"
+                          style={{ width: '100%', background: 'var(--bg-card-hover)', border: '1px solid var(--border-glow)', color: 'var(--text-main)', marginTop: '4px' }}
+                          onClick={() => { setShowPlayAgainPrompt(false); setScorecardStep('slot_history') }}
+                        >
+                          📋 View Today's Match History for This Slot
+                        </button>
+                      </div>
+                    )
+                  }
+
+                  {/* Slot Match History Screen */}
+                  if (scorecardStep === 'slot_history') {
+                    const noHistory = slotMatchHistory.length === 0
+                    return (
+                      <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                          <h3 style={{ fontSize: '18px', fontWeight: '800', color: 'var(--text-main)' }}>📋 Slot Match History</h3>
+                          <button
+                            className="btn-login"
+                            style={{ margin: 0, padding: '6px 16px', fontSize: '12px' }}
                             onClick={() => setActiveScorecardBookingId(null)}
                           >
-                            Return to Profile
+                            Close
                           </button>
                         </div>
+                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '16px' }}>
+                          All matches played in this booking slot ({booking.time} · {booking.duration}h · Turf {booking.turfId})
+                        </div>
+
+                        {noHistory ? (
+                          <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '40px', fontStyle: 'italic' }}>
+                            No matches recorded yet for this slot.
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            {slotMatchHistory.map((m, idx) => (
+                              <div key={idx} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-glow)', borderRadius: '12px', padding: '16px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                                  <span style={{ fontWeight: '800', fontSize: '14px' }}>Match {idx + 1}: {m.teams?.a} vs {m.teams?.b}</span>
+                                  <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{new Date(m.ts).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
+                                </div>
+                                <div style={{ display: 'inline-block', background: 'rgba(0,255,102,0.07)', border: '1px solid rgba(0,255,102,0.2)', borderRadius: '20px', padding: '4px 14px', marginBottom: '10px' }}>
+                                  <span style={{ fontSize: '12px', color: 'var(--accent-football)', fontWeight: 'bold' }}>🏆 {m.result}</span>
+                                </div>
+                                {m.score1 && (
+                                  <div style={{ display: 'flex', gap: '12px', fontSize: '13px', fontFamily: 'monospace', color: 'var(--text-main)' }}>
+                                    <span>{m.team1}: <strong>{m.score1}</strong> ({m.overs1} ov)</span>
+                                    <span>|</span>
+                                    <span>{m.team2}: <strong>{m.score2}</strong> ({m.overs2} ov)</span>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        <button
+                          className="btn-book-action"
+                          style={{ width: '100%', marginTop: '24px', background: 'var(--bg-card-hover)', border: '1px solid var(--border-glow)', color: 'var(--text-main)' }}
+                          onClick={() => setActiveScorecardBookingId(null)}
+                        >
+                          Exit Scorecard
+                        </button>
                       </div>
                     )
                   }
@@ -4852,6 +5908,21 @@ function App() {
                           </span>
                         </div>
                       </div>
+
+                      {/* 2nd innings: show target to chase */}
+                      {sc.battingTeam === 2 && sc.score1 && (() => {
+                        const target = parseInt((sc.score1 || '0/0').split('/')[0], 10) + 1
+                        const current = parseInt((sc.score2 || '0/0').split('/')[0], 10)
+                        const needed = Math.max(0, target - current)
+                        return (
+                          <div style={{ background: 'rgba(255,165,0,0.06)', border: '1px solid rgba(255,165,0,0.2)', borderRadius: '10px', padding: '10px 16px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>🎯 Target: <strong style={{ color: 'var(--text-main)' }}>{target}</strong></span>
+                            <span style={{ fontSize: '13px', fontWeight: 'bold', color: needed === 0 ? 'var(--accent-football)' : 'orange' }}>
+                              {needed > 0 ? `${needed} runs needed` : '✅ Target chased!'}
+                            </span>
+                          </div>
+                        )
+                      })()}
 
                       {/* Active Batsmen & Bowler Stats grid */}
                       <div className="active-stats-grid" style={{ marginBottom: '24px' }}>
@@ -5081,21 +6152,131 @@ function App() {
                       </div>
 
 
+                      {/* INLINE WICKET PANEL */}
+                      {wicketPanel && (
+                        <div style={{ background: 'rgba(193,68,14,0.06)', border: '1px solid rgba(193,68,14,0.3)', borderRadius: '14px', padding: '20px', marginTop: '16px' }}>
+                          <div style={{ fontSize: '14px', fontWeight: '800', color: 'var(--accent-cricket)', marginBottom: '16px' }}>🚨 Wicket — Fill in dismissal details</div>
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
+                            {/* Who got out */}
+                            <div>
+                              <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>Who got out?</label>
+                              <div style={{ display: 'flex', gap: '8px' }}>
+                                <button
+                                  className="role-selector"
+                                  style={{ flex: 1, padding: '10px 8px', fontSize: '12px', cursor: 'pointer', background: wicketPanel.dismissedBatsman === 'Striker' ? 'rgba(193,68,14,0.2)' : 'transparent', borderColor: wicketPanel.dismissedBatsman === 'Striker' ? 'var(--accent-cricket)' : 'var(--border-glow)', color: wicketPanel.dismissedBatsman === 'Striker' ? 'var(--accent-cricket)' : 'var(--text-muted)' }}
+                                  onClick={() => setWicketPanel(p => ({ ...p, dismissedBatsman: 'Striker' }))}
+                                >
+                                  🏏 {sc.striker || 'Striker'}
+                                </button>
+                                <button
+                                  className="role-selector"
+                                  style={{ flex: 1, padding: '10px 8px', fontSize: '12px', cursor: 'pointer', background: wicketPanel.dismissedBatsman === 'NonStriker' ? 'rgba(193,68,14,0.2)' : 'transparent', borderColor: wicketPanel.dismissedBatsman === 'NonStriker' ? 'var(--accent-cricket)' : 'var(--border-glow)', color: wicketPanel.dismissedBatsman === 'NonStriker' ? 'var(--accent-cricket)' : 'var(--text-muted)' }}
+                                  onClick={() => setWicketPanel(p => ({ ...p, dismissedBatsman: 'NonStriker' }))}
+                                >
+                                  {sc.nonStriker || 'Non-Striker'}
+                                </button>
+                              </div>
+                            </div>
+                            {/* How out */}
+                            <div>
+                              <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>How?</label>
+                              <select
+                                className="role-selector"
+                                style={{ width: '100%', padding: '10px', height: '44px' }}
+                                value={wicketPanel.howOut}
+                                onChange={e => setWicketPanel(p => ({ ...p, howOut: e.target.value }))}
+                              >
+                                {['Catch', 'Bowled', 'Run Out', 'Stumped', 'LBW', 'Hit Wicket', 'Retired'].map(d => (
+                                  <option key={d} value={d}>{d}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          {/* Next batsman */}
+                          <div style={{ marginBottom: '16px' }}>
+                            <label style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textTransform: 'uppercase' }}>Next Batsman Coming In</label>
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                              <button
+                                className="role-selector"
+                                style={{ padding: '7px 14px', fontSize: '12px', cursor: 'pointer', background: wicketPanel.nextBatsman === '' ? 'rgba(255,255,255,0.06)' : 'transparent', borderColor: wicketPanel.nextBatsman === '' ? 'var(--accent-football)' : 'var(--border-glow)', color: wicketPanel.nextBatsman === '' ? 'var(--accent-football)' : 'var(--text-muted)' }}
+                                onClick={() => setWicketPanel(p => ({ ...p, nextBatsman: '' }))}
+                              >
+                                Select after
+                              </button>
+                              {getAvailableBatsmen(wicketPanel.dismissedBatsman === 'Striker' ? sc.striker : sc.nonStriker).map(p => (
+                                <button
+                                  key={p.name}
+                                  className="role-selector"
+                                  style={{ padding: '7px 14px', fontSize: '12px', cursor: 'pointer', background: wicketPanel.nextBatsman === p.name ? 'rgba(0,255,102,0.1)' : 'transparent', borderColor: wicketPanel.nextBatsman === p.name ? 'var(--accent-football)' : 'var(--border-glow)', color: wicketPanel.nextBatsman === p.name ? 'var(--accent-football)' : 'var(--text-main)' }}
+                                  onClick={() => setWicketPanel(prev => ({ ...prev, nextBatsman: p.name }))}
+                                >
+                                  {p.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div style={{ display: 'flex', gap: '10px' }}>
+                            <button
+                              className="btn-book-action"
+                              style={{ flex: 1, background: 'var(--accent-cricket)', color: '#fff', fontWeight: '900' }}
+                              onClick={handleConfirmWicket}
+                            >
+                              ✅ Confirm Wicket
+                            </button>
+                            <button
+                              className="btn-book-action"
+                              style={{ flex: 1, background: 'var(--bg-card-hover)', border: '1px solid var(--border-glow)', color: 'var(--text-main)' }}
+                              onClick={() => setWicketPanel(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Innings & Match Actions */}
-                      <div style={{ marginTop: '32px', display: 'flex', gap: '12px', borderTop: '1px solid var(--border-glow)', paddingTop: '20px' }}>
-                        <button 
-                          className="btn-book-action" 
-                          style={{ flex: 1, background: 'var(--bg-card-hover)', border: '1px solid var(--border-glow)', color: 'var(--text-main)' }}
-                          onClick={() => setActiveScorecardBookingId(null)}
+                      <div style={{ marginTop: '32px', borderTop: '1px solid var(--border-glow)', paddingTop: '20px' }}>
+                        <div style={{ display: 'flex', gap: '12px', marginBottom: '10px' }}>
+                          <button 
+                            className="btn-book-action" 
+                            style={{ flex: 1, background: 'var(--bg-card-hover)', border: '1px solid var(--border-glow)', color: 'var(--text-main)' }}
+                            onClick={() => setActiveScorecardBookingId(null)}
+                          >
+                            Save & Exit
+                          </button>
+                          <button 
+                            className="btn-book-action" 
+                            style={{ flex: 2 }}
+                            onClick={handleDeclareInnings}
+                          >
+                            {sc.battingTeam === 1 ? '🔄 Declare 1st Innings & Swap Teams' : '🏁 End Match & Declare Final Winner'}
+                          </button>
+                        </div>
+                        {/* Concede / Win Declare — always visible */}
+                        <button
+                          className="btn-book-action"
+                          style={{ width: '100%', background: 'rgba(255,71,71,0.08)', border: '1px solid rgba(255,71,71,0.3)', color: 'var(--accent-cricket)', fontSize: '12px', padding: '10px' }}
+                          onClick={async () => {
+                            const confirmed = await showConfirm(
+                              `Are you sure you want to concede? The opponent (${sc.battingTeam === 1 ? sc.team2 : sc.team1}) will be declared winners.`,
+                              '🏳️ Concede / Declare Win'
+                            )
+                            if (!confirmed) return
+                            const winner = sc.battingTeam === 1 ? sc.team2 : sc.team1
+                            const resultText = `${winner} won — by concession`
+                            const completedSc = { ...sc, result: resultText, isCompleted: true }
+                            handleUpdateScorecard(booking.id, completedSc)
+                            setBookings(prev => prev.map(b => b.id === booking.id ? { ...b, status: 'completed' } : b))
+                            setSlotMatchHistory(prev => [...prev, {
+                              ...completedSc,
+                              bookingId: booking.id,
+                              teams: { a: sc.team1, b: sc.team2 },
+                              ts: new Date().toISOString()
+                            }])
+                            setShowPlayAgainPrompt(true)
+                          }}
                         >
-                          Save Match & Exit Scorecard
-                        </button>
-                        <button 
-                          className="btn-book-action" 
-                          style={{ flex: 1 }}
-                          onClick={handleDeclareInnings}
-                        >
-                          {sc.battingTeam === 1 ? 'Declare 1st Innings & Swap Teams' : 'End Match & Declare Final Winner'}
+                          🏳️ Concede Match — Give Win to Opponent
                         </button>
                       </div>
 
@@ -5217,9 +6398,13 @@ function App() {
             </h3>
             
             <div className="coin-container">
-              <div className={`coin ${tossCoinState.spinning ? 'spinning' : ''} ${!tossCoinState.spinning && tossCoinState.winner === 2 ? 'flip-tails' : 'flip-heads'}`}>
-                <div className="coin-face coin-front">A</div>
-                <div className="coin-face coin-back">B</div>
+              <div className={`coin ${tossCoinState.spinning || tossCoinState.winner ? (tossCoinState.winner === 2 ? 'spinning-tails' : 'spinning-heads') : ''}`}>
+                <div className="side heads">
+                  <div className="coin-inner">A</div>
+                </div>
+                <div className="side tails">
+                  <div className="coin-inner">B</div>
+                </div>
               </div>
             </div>
 
@@ -5228,12 +6413,25 @@ function App() {
                 <div style={{ color: 'var(--text-muted)' }}>Waiting for outcome...</div>
               ) : (
                 <div style={{ animation: 'fadeIn 0.5s ease-out' }}>
-                  <div style={{ fontSize: '22px', color: tossCoinState.winner === 1 ? 'var(--accent-football)' : 'var(--accent-cricket)', fontWeight: '900' }}>
-                    Team {tossCoinState.winner === 1 ? 'A' : 'B'} won the Toss!
-                  </div>
-                  <div style={{ fontSize: '18px', color: 'var(--text-main)', marginTop: '8px' }}>
-                    They chose to <strong style={{ color: 'var(--accent-others)' }}>{tossCoinState.choice}</strong>
-                  </div>
+                  {(() => {
+                    const winnerTeamName = tossCoinState.winner === 1 ? (teamANameInput || 'Team A') : (teamBNameInput || 'Team B')
+                    const winnerCaptain = tossCoinState.winner === 1 ? captainA : captainB
+                    return (
+                      <>
+                        <div style={{ fontSize: '22px', color: tossCoinState.winner === 1 ? 'var(--accent-football)' : 'var(--accent-cricket)', fontWeight: '900' }}>
+                          🏏 {winnerTeamName} won the Toss!
+                        </div>
+                        {winnerCaptain && (
+                          <div style={{ fontSize: '15px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                            Captain: <strong style={{ color: 'var(--text-main)' }}>{winnerCaptain}</strong>
+                          </div>
+                        )}
+                        <div style={{ fontSize: '13px', color: 'var(--accent-others)', marginTop: '10px', fontStyle: 'italic' }}>
+                          ← Enter their decision (Bat / Bowl) below
+                        </div>
+                      </>
+                    )
+                  })()}
                 </div>
               )}
             </div>

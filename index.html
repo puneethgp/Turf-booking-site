@@ -12,7 +12,61 @@
     <title>Smash &amp; Roast — Turf Booking &amp; Live Scorecard</title>
   </head>
   <body>
-    <div id="root"></div>
+    <style>
+      .app-loader {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        background: #0a0f1e; /* match dark theme */
+        z-index: 99999;
+      }
+      .app-loader-ball {
+        width: 50px;
+        height: 50px;
+        background: radial-gradient(circle at 15px 15px, #ff4c4c, #8b0000); /* Cricket ball red */
+        border-radius: 50%;
+        box-shadow: inset -5px -5px 15px rgba(0,0,0,0.5), 0 10px 20px rgba(0,0,0,0.4);
+        position: relative;
+        animation: loaderBounceAndSpin 1.2s cubic-bezier(0.28, 0.84, 0.42, 1) infinite;
+      }
+      .app-loader-ball::after {
+        content: '';
+        position: absolute;
+        top: 0; bottom: 0; left: 50%; width: 2px;
+        background: rgba(255, 255, 255, 0.4);
+        transform: translateX(-50%);
+        border-left: 2px dashed rgba(255,255,255,0.8);
+        border-right: 2px dashed rgba(255,255,255,0.8);
+      }
+      .app-loader-text {
+        margin-top: 24px;
+        color: #fff;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 16px;
+        font-weight: 800;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+        animation: pulseOpacity 1.5s ease-in-out infinite;
+      }
+      @keyframes loaderBounceAndSpin {
+        0% { transform: translateY(0) rotate(0deg); }
+        50% { transform: translateY(-50px) rotate(180deg); }
+        100% { transform: translateY(0) rotate(360deg); }
+      }
+      @keyframes pulseOpacity {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+    </style>
+    <div id="root">
+      <div class="app-loader">
+        <div class="app-loader-ball"></div>
+        <div class="app-loader-text">Loading</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
